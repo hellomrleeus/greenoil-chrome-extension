@@ -213,21 +213,109 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      // 3. Check place status in active route
+function getHaversineDistKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isPlaceMatch(w, q) {
+  if (!w || !q) return false;
+
+  const wName = (w.name || "").trim().toLowerCase();
+  const qName = (q.name || "").trim().toLowerCase();
+
+  // Reject generic or placeholder names
+  if (!qName || qName === "selected location" || qName.length < 2) return false;
+  if (!wName || wName === "selected location" || wName.length < 2) return false;
+
+  // 1. CID / Place ID Match: ONLY valid when names are consistent
+  const wPid = w.placeId || w.id || "";
+  const qPid = q.placeId || q.id || "";
+  if (wPid && qPid && wPid === qPid && !wPid.startsWith("custom_")) {
+    const consistent = wName === qName || wName.includes(qName) || qName.includes(wName);
+    if (consistent) return true;
+  }
+
+  // 2. Exact Name Match
+  if (wName === qName) return true;
+
+  // 3. English Name Match
+  const wEn = (w.nameEn || "").trim().toLowerCase();
+  const qEn = (q.nameEn || "").trim().toLowerCase();
+  if (wEn && (wEn === qName || wEn === qEn)) return true;
+  if (qEn && (qEn === wName || qEn === wEn)) return true;
+
+  // 4. Substring Name Match with Address or Coordinate corroboration
+  const wAddr = (w.address || "").trim().toLowerCase();
+  const qAddr = (q.address || "").trim().toLowerCase();
+  const nameSub = wName.includes(qName) || qName.includes(wName);
+
+  if (nameSub) {
+    if (wAddr && qAddr && (wAddr.includes(qAddr) || qAddr.includes(wAddr))) {
+      return true;
+    }
+    if (w.latitude && q.latitude && w.longitude && q.longitude) {
+      const d = getHaversineDistKm(parseFloat(w.latitude), parseFloat(w.longitude), parseFloat(q.latitude), parseFloat(q.longitude));
+      if (d < 0.25) return true;
+    }
+  }
+
+  return false;
+}
+
+      // 3. Check place status across ALL 5 color routes
       if (message.action === "checkPlaceStatus") {
-        const placeId = message.placeId;
-        const name = (message.name || "").trim().toLowerCase();
-        const waypoints = Array.isArray(activeRoute.waypoints) ? activeRoute.waypoints : [];
-        const inRoute = waypoints.some(w => {
-          if (placeId && w.placeId === placeId) return true;
-          if (name && w.name.trim().toLowerCase() === name) return true;
-          return false;
-        });
-        sendResponse({
-          inRoute,
-          activeRouteId: activeId,
-          theme: activeRoute
-        });
+        const queryPlace = {
+          placeId: message.placeId,
+          name: message.name,
+          nameEn: message.nameEn,
+          address: message.address,
+          latitude: message.latitude,
+          longitude: message.longitude
+        };
+
+        let foundInRoute = null;
+
+        // Check active route first
+        if (activeRoute && Array.isArray(activeRoute.waypoints)) {
+          if (activeRoute.waypoints.some(w => isPlaceMatch(w, queryPlace))) {
+            foundInRoute = activeRoute;
+          }
+        }
+
+        // Check remaining routes if not in active route
+        if (!foundInRoute) {
+          for (const key of Object.keys(routes)) {
+            if (key === activeId) continue;
+            const r = routes[key];
+            if (r && Array.isArray(r.waypoints) && r.waypoints.some(w => isPlaceMatch(w, queryPlace))) {
+              foundInRoute = r;
+              break;
+            }
+          }
+        }
+
+        if (foundInRoute) {
+          sendResponse({
+            inRoute: true,
+            belongRouteId: foundInRoute.id,
+            belongRouteName: foundInRoute.name,
+            belongTheme: foundInRoute,
+            activeRouteId: activeId,
+            activeTheme: activeRoute
+          });
+        } else {
+          sendResponse({
+            inRoute: false,
+            activeRouteId: activeId,
+            activeTheme: activeRoute
+          });
+        }
         return;
       }
 
@@ -243,16 +331,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           activeRoute.waypoints = [];
         }
 
-        // Deduplication check
-        const exists = activeRoute.waypoints.some(w => {
-          if (wp.placeId && w.placeId === wp.placeId) return true;
-          if (w.name.trim().toLowerCase() === wp.name.trim().toLowerCase()) return true;
-          return false;
-        });
-
-        if (exists) {
-          sendResponse({ success: false, alreadyExists: true, theme: activeRoute });
+        // Check if already in active route
+        if (activeRoute.waypoints.some(w => isPlaceMatch(w, wp))) {
+          sendResponse({
+            success: false,
+            alreadyExists: true,
+            theme: activeRoute,
+            belongTheme: activeRoute
+          });
           return;
+        }
+
+        // Check if already in another route
+        for (const key of Object.keys(routes)) {
+          if (key === activeId) continue;
+          const r = routes[key];
+          if (r && Array.isArray(r.waypoints) && r.waypoints.some(w => isPlaceMatch(w, wp))) {
+            sendResponse({
+              success: false,
+              alreadyExistsInOther: true,
+              belongRouteName: r.name,
+              belongTheme: r
+            });
+            return;
+          }
         }
 
         activeRoute.waypoints.push(wp);

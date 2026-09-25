@@ -12,22 +12,25 @@ if (window.__greenoil_injected__) {
   window.__greenoil_injected__ = true;
   (() => {
     let lastProcessedKey = "";
-    let currentTheme = null;
+    let currentTheme = { color: "#059669", hoverColor: "#047857", lightColor: "#ecfdf5", borderColor: "#10b981", name: "绿线" };
 
-    function applyTheme(theme) {
-      if (!theme) return;
-      currentTheme = theme;
-      document.documentElement.style.setProperty("--go-theme", theme.color || "#059669");
-      document.documentElement.style.setProperty("--go-hover", theme.hoverColor || "#047857");
-      document.documentElement.style.setProperty("--go-light", theme.lightColor || "#ecfdf5");
-      document.documentElement.style.setProperty("--go-border", theme.borderColor || "#10b981");
+    function applyThemeToContainer(container, theme) {
+      if (!container || !theme) return;
+      container.style.setProperty("--go-theme", theme.color || "#059669");
+      container.style.setProperty("--go-hover", theme.hoverColor || "#047857");
+      container.style.setProperty("--go-light", theme.lightColor || "#ecfdf5");
+      container.style.setProperty("--go-border", theme.borderColor || "#10b981");
     }
 
     try {
       if (chrome.runtime?.id) {
         chrome.runtime.sendMessage({ action: "getActiveTheme" }, (resp) => {
           if (resp && resp.theme) {
-            applyTheme(resp.theme);
+            currentTheme = resp.theme;
+            const btnContainer = document.getElementById("greenoil-add-waypoint-btn");
+            if (btnContainer && !btnContainer.classList.contains("greenoil-added")) {
+              applyThemeToContainer(btnContainer, currentTheme);
+            }
           }
         });
       }
@@ -36,7 +39,12 @@ if (window.__greenoil_injected__) {
     if (chrome.runtime?.onMessage) {
       chrome.runtime.onMessage.addListener((message) => {
         if (message.action === "themeColorChanged" && message.theme) {
-          applyTheme(message.theme);
+          currentTheme = message.theme;
+          const btnContainer = document.getElementById("greenoil-add-waypoint-btn");
+          if (btnContainer && !btnContainer.classList.contains("greenoil-added")) {
+            applyThemeToContainer(btnContainer, currentTheme);
+            btnContainer.title = `加入当前地点到【${currentTheme.name}】`;
+          }
           lastProcessedKey = "";
           if (typeof checkAndInject === "function") {
             checkAndInject();
@@ -50,37 +58,40 @@ if (window.__greenoil_injected__) {
   const SVG_INFO = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`;
 
   /**
-   * Determine whether a place detail panel is currently open
+   * Determine whether a place detail panel is currently open and ready
    */
   function isPlacePage() {
-    if (location.href.includes("/place/")) return true;
     const mainPanel = document.querySelector('div[role="main"]');
-    if (mainPanel) {
-      const heading = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
-      if (heading && heading.textContent && heading.textContent.trim().length > 0) {
-        return true;
-      }
-      const dirBtn = mainPanel.querySelector([
-        '[data-item-id="directions"]',
-        'button[data-value="Directions"]',
-        'button[data-value="路线"]',
-        'button[data-value="規劃路線"]',
-        'button[aria-label*="Directions"]',
-        'button[aria-label*="路线"]',
-        'button[aria-label*="路線"]'
-      ].join(', '));
-      if (dirBtn) return true;
+    if (!mainPanel) return false;
+    const heading = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
+    if (!heading || !heading.textContent || heading.textContent.trim().length === 0) {
+      return false;
     }
-    return false;
+    const dirBtn = mainPanel.querySelector([
+      '[data-item-id="directions"]',
+      'button[data-value="Directions"]',
+      'button[data-value="路线"]',
+      'button[data-value="規劃路線"]',
+      'button[aria-label*="Directions" i]',
+      'button[aria-label*="路线"]',
+      'button[aria-label*="路線"]',
+      'button[aria-label*="规划"]',
+      'button[aria-label*="規劃"]',
+      'a[data-value="Directions"]',
+      'a[data-item-id="directions"]'
+    ].join(', '));
+    if (!dirBtn || !dirBtn.offsetParent) return false;
+
+    return true;
   }
 
   /**
-   * Extract place details ONLY when the user clicks [+ 途径点]
+   * Extract place details on-demand with strict place validation
    */
   function extractPlaceData() {
     const mainPanel = document.querySelector('div[role="main"]') || document.body;
 
-    // 1. Name: English/Official Name from H1 or URL
+    // 1. Name: Heading text is the single source of truth for the currently viewed place
     let name = "";
     const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
     if (h1 && h1.textContent) {
@@ -89,10 +100,10 @@ if (window.__greenoil_injected__) {
     if (!name) {
       const urlMatch = location.pathname.match(/\/place\/([^/@]+)/);
       if (urlMatch && urlMatch[1]) {
-        name = decodeURIComponent(urlMatch[1].replace(/\+/g, " "));
+        name = decodeURIComponent(urlMatch[1].replace(/\+/g, " ")).trim();
       }
     }
-    if (!name) name = "Selected Location";
+    if (!name || name === "Selected Location") return null;
 
     // 2. Latitude & Longitude from URL
     let latitude = 43.76;
@@ -132,18 +143,28 @@ if (window.__greenoil_injected__) {
       address = name;
     }
 
-    // 4. Place ID / CID
+    // 4. Place ID / CID: ONLY trust URL's CID if URL matches current place name!
     let placeId = "";
-    const cidMatch = location.href.match(/!1s0x[0-9a-fA-F]+:0x([0-9a-fA-F]+)/);
-    if (cidMatch && cidMatch[1]) {
-      placeId = "cid_" + cidMatch[1];
-    } else {
-      const hexMatch = location.href.match(/0x[0-9a-fA-F]+:0x[0-9a-fA-F]+/);
-      if (hexMatch) {
-        placeId = hexMatch[0];
+    const pathMatch = location.pathname.match(/\/place\/([^/@]+)/);
+    const urlPlaceName = pathMatch && pathMatch[1] ? decodeURIComponent(pathMatch[1].replace(/\+/g, " ")).trim().toLowerCase() : "";
+    const nameLower = name.toLowerCase();
+
+    const urlMatchesPlace = !urlPlaceName || urlPlaceName === nameLower || nameLower.includes(urlPlaceName) || urlPlaceName.includes(nameLower);
+
+    if (urlMatchesPlace) {
+      const cidMatch = location.href.match(/!1s0x[0-9a-fA-F]+:0x([0-9a-fA-F]+)/);
+      if (cidMatch && cidMatch[1]) {
+        placeId = "cid_" + cidMatch[1];
       } else {
-        placeId = "custom_" + Math.abs(hashCode(name + address));
+        const hexMatch = location.href.match(/0x[0-9a-fA-F]+:0x[0-9a-fA-F]+/);
+        if (hexMatch) {
+          placeId = hexMatch[0];
+        }
       }
+    }
+
+    if (!placeId) {
+      placeId = "custom_" + Math.abs(hashCode(name + "|" + address));
     }
 
     // 5. Rating & Reviews
@@ -270,7 +291,7 @@ if (window.__greenoil_injected__) {
     try {
       const currentUrl = location.href;
 
-      // 1. Not a place view: clean up old button and exit
+      // 1. Must be a ready place view
       if (!isPlacePage()) {
         if (lastProcessedKey) {
           lastProcessedKey = "";
@@ -288,7 +309,14 @@ if (window.__greenoil_injected__) {
         return;
       }
 
-      // 2. MUST find Directions button (只能出现在地点信息的那排按钮中，绝不出现在营业时间等子面板)
+      // 2. Extract heading place name
+      const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
+      const placeName = h1 && h1.textContent ? h1.textContent.trim() : "";
+      if (!placeName) {
+        return;
+      }
+
+      // 3. MUST find Directions button in place main actions row
       const dirBtn = mainPanel.querySelector([
         'button[data-value="Directions"]',
         'button[data-value="路线"]',
@@ -304,7 +332,6 @@ if (window.__greenoil_injected__) {
         '[data-item-id="directions"]'
       ].join(', '));
 
-      // IF NOT IN PLACE MAIN ACTION ROW: REMOVE BUTTON AND EXIT IMMEDIATELY
       if (!dirBtn || !dirBtn.offsetParent) {
         const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
         if (oldBtn) oldBtn.remove();
@@ -315,7 +342,6 @@ if (window.__greenoil_injected__) {
       const dirItem = dirBtn.closest('.etWJQ') || dirBtn.parentElement;
       const targetRow = dirItem ? dirItem.parentElement : null;
 
-      // Must be the main actions row (has class m6QErb)
       if (!targetRow || !targetRow.classList.contains('m6QErb')) {
         const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
         if (oldBtn) oldBtn.remove();
@@ -323,11 +349,9 @@ if (window.__greenoil_injected__) {
         return;
       }
 
-      const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
-      const placeName = h1 ? h1.textContent.trim() : "";
       const currentKey = currentUrl + "|" + placeName;
 
-      // Already injected and in place
+      // Already injected and in place for THIS place
       const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
       if (existingBtn && document.body.contains(existingBtn) && currentKey === lastProcessedKey && targetRow.contains(existingBtn)) {
         return;
@@ -341,11 +365,14 @@ if (window.__greenoil_injected__) {
       container.id = "greenoil-add-waypoint-btn";
       container.className = "etWJQ jym1ob kdfrQc WY7ZIb greenoil-action-container";
 
+      // Initially styled with current active route theme
+      applyThemeToContainer(container, currentTheme);
+
       const btn = document.createElement("button");
       btn.className = "S9kvJb greenoil-action-btn";
       btn.type = "button";
       btn.setAttribute("aria-label", "+ 途径点");
-      btn.title = "加入当前地点到 Green Oil 路线";
+      btn.title = `加入当前地点到【${currentTheme?.name || '当前路线'}】`;
 
       const circle = document.createElement("span");
       circle.className = "DVeyrd greenoil-action-circle";
@@ -359,24 +386,43 @@ if (window.__greenoil_injected__) {
       btn.appendChild(label);
       container.appendChild(btn);
 
-      // Check if place is already in the active route
+      // Check if place is already in ANY of the 5 color routes
       try {
         if (chrome.runtime?.id) {
           const preliminaryData = extractPlaceData();
-          chrome.runtime.sendMessage({
-            action: "checkPlaceStatus",
-            placeId: preliminaryData.placeId,
-            name: preliminaryData.name
-          }, (resp) => {
-            if (resp && resp.theme) {
-              applyTheme(resp.theme);
-            }
-            if (resp && resp.inRoute) {
-              circle.innerHTML = SVG_CHECK;
-              label.textContent = "已添加";
-              container.classList.add("greenoil-added");
-            }
-          });
+          if (preliminaryData) {
+            chrome.runtime.sendMessage({
+              action: "checkPlaceStatus",
+              placeId: preliminaryData.placeId,
+              name: preliminaryData.name,
+              nameEn: preliminaryData.nameEn,
+              address: preliminaryData.address,
+              latitude: preliminaryData.latitude,
+              longitude: preliminaryData.longitude
+            }, (resp) => {
+              if (chrome.runtime.lastError) return;
+              if (resp && resp.inRoute) {
+                // Requirement 2: Show the route it belongs to!
+                circle.innerHTML = SVG_CHECK;
+                label.textContent = "已添加";
+                container.classList.add("greenoil-added");
+                container.dataset.belongRouteName = resp.belongRouteName || "";
+                container.dataset.belongRouteId = resp.belongRouteId || "";
+                container.title = `该地点已在【${resp.belongRouteName}】中`;
+                applyThemeToContainer(container, resp.belongTheme);
+              } else {
+                // Not added: show active route theme!
+                circle.innerHTML = SVG_PLUS;
+                label.textContent = "+ 途径点";
+                container.classList.remove("greenoil-added");
+                delete container.dataset.belongRouteName;
+                delete container.dataset.belongRouteId;
+                const activeTh = resp?.activeTheme || currentTheme;
+                container.title = `加入当前地点到【${activeTh?.name || '当前路线'}】`;
+                applyThemeToContainer(container, activeTh);
+              }
+            });
+          }
         }
       } catch (_) {}
 
@@ -385,13 +431,20 @@ if (window.__greenoil_injected__) {
         e.preventDefault();
 
         if (container.classList.contains("greenoil-added")) {
-          showToast("提示", "该地点已在当前路线中", true);
+          const belongName = container.dataset.belongRouteName || "路线";
+          showToast("提示", `该地点已存在于【${belongName}】中`, true);
           return;
         }
 
         circle.style.opacity = "0.7";
         label.textContent = "添加中...";
         const latestPlace = extractPlaceData();
+        if (!latestPlace) {
+          circle.style.opacity = "1";
+          label.textContent = "+ 途径点";
+          showToast("提示", "未能获取有效的地点信息", false);
+          return;
+        }
 
         try {
           if (!chrome.runtime?.id) {
@@ -416,12 +469,24 @@ if (window.__greenoil_injected__) {
               circle.innerHTML = SVG_CHECK;
               label.textContent = "已添加";
               container.classList.add("greenoil-added");
-              showToast("已加入路线", `${latestPlace.name} (当前路线共 ${response.count} 个途径点)`);
+              container.dataset.belongRouteName = response.theme?.name || "";
+              container.title = `该地点已在【${response.theme?.name}】中`;
+              applyThemeToContainer(container, response.theme);
+              showToast("已加入路线", `${latestPlace.name} (已加入【${response.theme?.name}】，共 ${response.count} 站)`);
             } else if (response && response.alreadyExists) {
               circle.innerHTML = SVG_CHECK;
-              label.textContent = "已在路线";
+              label.textContent = "已添加";
               container.classList.add("greenoil-added");
+              container.dataset.belongRouteName = response.theme?.name || "";
+              applyThemeToContainer(container, response.theme);
               showToast("提示", `${latestPlace.name} 已存在于当前路线中`, false);
+            } else if (response && response.alreadyExistsInOther) {
+              circle.innerHTML = SVG_CHECK;
+              label.textContent = "已添加";
+              container.classList.add("greenoil-added");
+              container.dataset.belongRouteName = response.belongRouteName || "";
+              applyThemeToContainer(container, response.belongTheme);
+              showToast("提示", `${latestPlace.name} 已存在于【${response.belongRouteName}】中`, false);
             } else {
               label.textContent = "+ 途径点";
               showToast("添加失败", response?.error || "请稍后重试", false);
