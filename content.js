@@ -224,7 +224,7 @@ if (window.__greenoil_injected__) {
         return;
       }
 
-      // 3. Find target container: Directions button row or main panel header
+      // 3. Find target item and row: Directions button item container
       const dirBtn = mainPanel.querySelector([
         '[data-item-id="directions"]',
         'button[data-value="Directions"]',
@@ -240,30 +240,39 @@ if (window.__greenoil_injected__) {
         'a[data-item-id="directions"]'
       ].join(', '));
 
-      let targetContainer = null;
-      if (dirBtn && dirBtn.parentElement) {
-        targetContainer = dirBtn.parentElement;
+      let targetItem = null;
+      let targetRow = null;
+
+      if (dirBtn) {
+        targetItem = dirBtn.closest('.etWJQ, [role="group"]') || dirBtn.parentElement;
+        targetRow = targetItem ? targetItem.parentElement : null;
       } else {
-        const actionRow = mainPanel.querySelector('.m6QErb[aria-label], .m6QErb.Pf6ghf, .R6PtDb');
-        if (actionRow) {
-          targetContainer = actionRow;
-        } else if (h1 && h1.parentElement) {
-          targetContainer = h1.parentElement;
-        }
+        targetRow = mainPanel.querySelector('.m6QErb.Pf6ghf, .m6QErb[aria-label], .m6QErb');
       }
 
-      if (!targetContainer) return;
+      if (!targetRow) return;
 
       // Clean up previous button if place changed
       if (existingBtn) existingBtn.remove();
       lastProcessedKey = currentKey;
 
-      const btn = document.createElement("button");
+      const btn = document.createElement("div");
       btn.id = "greenoil-add-waypoint-btn";
-      btn.className = "greenoil-add-btn";
-      btn.type = "button";
+      btn.className = "greenoil-action-item";
+      btn.setAttribute("role", "button");
+      btn.setAttribute("tabindex", "0");
       btn.title = "加入当前地点到 Green Oil 路线";
-      btn.innerHTML = `${SVG_PLUS}<span>+ 途径点</span>`;
+
+      const circle = document.createElement("div");
+      circle.className = "greenoil-action-circle";
+      circle.innerHTML = SVG_PLUS;
+
+      const label = document.createElement("div");
+      label.className = "greenoil-action-label";
+      label.textContent = "+ 途径点";
+
+      btn.appendChild(circle);
+      btn.appendChild(label);
 
       // Check if place is already in the active route
       try {
@@ -275,7 +284,8 @@ if (window.__greenoil_injected__) {
             name: preliminaryData.name
           }, (resp) => {
             if (resp && resp.inRoute) {
-              btn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
+              circle.innerHTML = SVG_CHECK;
+              label.textContent = "已添加";
               btn.classList.add("greenoil-added");
             }
           });
@@ -286,13 +296,20 @@ if (window.__greenoil_injected__) {
         e.stopPropagation();
         e.preventDefault();
 
-        btn.disabled = true;
+        if (btn.classList.contains("greenoil-added")) {
+          showToast("提示", "该地点已在当前路线中", true);
+          return;
+        }
+
+        circle.style.opacity = "0.7";
+        label.textContent = "添加中...";
         const latestPlace = extractPlaceData();
 
         try {
           if (!chrome.runtime?.id) {
             showToast("提示", "扩展已重新加载，请刷新网页", false);
-            btn.disabled = false;
+            circle.style.opacity = "1";
+            label.textContent = "+ 途径点";
             return;
           }
 
@@ -300,36 +317,42 @@ if (window.__greenoil_injected__) {
             action: "addWaypoint",
             waypoint: latestPlace
           }, (response) => {
+            circle.style.opacity = "1";
             if (chrome.runtime.lastError) {
               showToast("通信异常", "无法连接后台服务，请刷新网页", false);
-              btn.disabled = false;
+              label.textContent = "+ 途径点";
               return;
             }
 
             if (response && response.success) {
-              btn.innerHTML = `${SVG_CHECK}<span>已添加</span>`;
+              circle.innerHTML = SVG_CHECK;
+              label.textContent = "已添加";
               btn.classList.add("greenoil-added");
               showToast("已加入路线", `${latestPlace.name} (当前路线共 ${response.count} 个途径点)`);
             } else if (response && response.alreadyExists) {
-              btn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
+              circle.innerHTML = SVG_CHECK;
+              label.textContent = "已在路线";
               btn.classList.add("greenoil-added");
               showToast("提示", `${latestPlace.name} 已存在于当前路线中`, false);
             } else {
+              label.textContent = "+ 途径点";
               showToast("添加失败", response?.error || "请稍后重试", false);
-              btn.disabled = false;
             }
           });
         } catch (err) {
           console.error("Failed to add waypoint:", err);
+          circle.style.opacity = "1";
+          label.textContent = "+ 途径点";
           showToast("通信异常", "扩展连接失败", false);
-          btn.disabled = false;
         }
       });
 
-      if (dirBtn && dirBtn.nextSibling) {
-        targetContainer.insertBefore(btn, dirBtn.nextSibling);
+      if (targetItem && targetItem.nextSibling) {
+        targetRow.insertBefore(btn, targetItem.nextSibling);
+      } else if (targetItem) {
+        targetRow.appendChild(btn);
       } else {
-        targetContainer.appendChild(btn);
+        targetRow.prepend(btn);
       }
     } catch (err) {
       console.warn("[GreenOil] Injection check caught error:", err);
