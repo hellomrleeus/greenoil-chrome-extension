@@ -477,11 +477,11 @@ class PopupController {
 
       card.innerHTML = `
         <input type="checkbox" class="card-checkbox custom-checkbox" ${isSelected ? 'checked' : ''} title="选择此站点">
-        <div class="card-index" title="点击在地图上平滑定位到此地点" role="button" tabindex="0">
+        <div class="card-index" title="定位到此地点" role="button" tabindex="0">
           <span class="index-num">#${index + 1}</span>
           <span class="index-pin">${SVG_PIN_MINI}</span>
         </div>
-        <div class="card-main" title="点击在地图上平滑定位到此地点" role="button" tabindex="0">
+        <div class="card-main" title="定位到此地点" role="button" tabindex="0">
           <div class="card-header-row">
             <span class="card-name" title="${this.escapeHtml(displayName)}">${this.escapeHtml(displayName)}</span>
             ${lockedBadgeHtml}

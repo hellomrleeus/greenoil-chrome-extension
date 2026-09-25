@@ -52,7 +52,7 @@ if (window.__greenoil_injected__) {
         }
 
         if (message.action === "didPanToWaypoint" && message.waypoint) {
-          showToast("平滑定位", `已定位到：${message.waypoint.name || "途径点"}`);
+          showToast("已定位", message.waypoint.name || "途径点");
           lastProcessedKey = "";
           setTimeout(() => {
             if (typeof checkAndInject === "function") {
@@ -78,7 +78,7 @@ if (window.__greenoil_injected__) {
               window.dispatchEvent(new PopStateEvent("popstate"));
             } catch (_) {}
           }
-          showToast("平滑定位", `已定位到：${wp.name || "途径点"}`);
+          showToast("已定位", wp.name || "途径点");
           lastProcessedKey = "";
           setTimeout(() => {
             if (typeof checkAndInject === "function") {
