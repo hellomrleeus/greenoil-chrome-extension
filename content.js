@@ -1,11 +1,11 @@
 /**
  * Green Oil Chrome Extension - Content Script for Google Maps
- * Non-invasive, polling-based button injection for Google Maps place details.
- * Zero DOM observers and zero monkey-patching to guarantee 100% native Google Maps load speed.
+ * Ultra-high-performance, zero-overhead button injection for Google Maps.
+ * Only injects the button when viewing a place. Extracts place details on-demand upon click.
  */
 
 (() => {
-  let lastInjectedPlaceId = null;
+  let lastProcessedUrl = "";
 
   const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
   const SVG_CHECK = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
@@ -15,6 +15,9 @@
     return location.href.includes("/place/");
   }
 
+  /**
+   * Extract place details ONLY when the user clicks [+ 途径点]
+   */
   function extractPlaceData() {
     const mainPanel = document.querySelector('div[role="main"]') || document.body;
 
@@ -161,25 +164,29 @@
     }, 3200);
   }
 
+  /**
+   * Lightning-fast check: only touches DOM if on a place page and button is not present
+   */
   function checkAndInject() {
+    const currentUrl = location.href;
+
+    // 1. Not a place page: clean up old button if any and exit immediately
     if (!isPlacePage()) {
-      lastInjectedPlaceId = null;
-      const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
-      if (oldBtn) oldBtn.remove();
+      if (lastProcessedUrl) {
+        lastProcessedUrl = "";
+        const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
+        if (oldBtn) oldBtn.remove();
+      }
       return;
     }
 
-    const placeData = extractPlaceData();
-    if (!placeData || !placeData.name || placeData.name === "Unknown Place") return;
-
+    // 2. Same place and button is already in DOM: DO ABSOLUTELY NOTHING
     const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
-    if (existingBtn) {
-      if (lastInjectedPlaceId === placeData.placeId && document.body.contains(existingBtn)) {
-        return;
-      }
-      existingBtn.remove();
+    if (existingBtn && currentUrl === lastProcessedUrl && document.body.contains(existingBtn)) {
+      return;
     }
 
+    // 3. Look for target container in main place panel
     const mainPanel = document.querySelector('div[role="main"]');
     if (!mainPanel) return;
 
@@ -197,7 +204,10 @@
 
     if (!targetContainer) return;
 
-    lastInjectedPlaceId = placeData.placeId;
+    // Remove stale button if place changed
+    if (existingBtn) existingBtn.remove();
+
+    lastProcessedUrl = currentUrl;
 
     const btn = document.createElement("button");
     btn.id = "greenoil-add-waypoint-btn";
@@ -206,29 +216,12 @@
     btn.title = "加入当前地点到 Green Oil 路线";
     btn.innerHTML = `${SVG_PLUS}<span>+ 途径点</span>`;
 
-    try {
-      if (chrome.runtime?.id) {
-        chrome.runtime.sendMessage({
-          action: "checkPlaceStatus",
-          placeId: placeData.placeId,
-          name: placeData.name
-        }, (res) => {
-          if (chrome.runtime.lastError) return;
-          if (res && res.inRoute) {
-            btn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
-            btn.classList.add("greenoil-added");
-            btn.disabled = true;
-          }
-        });
-      }
-    } catch {}
-
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       e.preventDefault();
 
-      const latestPlace = extractPlaceData();
       btn.disabled = true;
+      const latestPlace = extractPlaceData();
 
       try {
         if (!chrome.runtime?.id) {
@@ -274,10 +267,10 @@
     }
   }
 
-  // Pure gentle polling check every 800ms - zero interference with Google Maps
-  setInterval(checkAndInject, 800);
+  // Pure lightweight polling loop every 1000ms
+  setInterval(checkAndInject, 1000);
 
-  // Initial check on load
+  // Initial check
   if (document.readyState === "complete" || document.readyState === "interactive") {
     checkAndInject();
   } else {
