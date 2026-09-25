@@ -1,27 +1,20 @@
 /**
  * Green Oil Chrome Extension - Content Script for Google Maps
- * Safely injects "+ 途径点" button into Google Maps place details panel without impacting page performance.
+ * Non-invasive, polling-based button injection for Google Maps place details.
+ * Zero DOM observers and zero monkey-patching to guarantee 100% native Google Maps load speed.
  */
 
 (() => {
-  let lastUrl = location.href;
-  let debounceTimer = null;
-  let currentInjectedPlaceId = null;
+  let lastInjectedPlaceId = null;
 
   const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
   const SVG_CHECK = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
   const SVG_INFO = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`;
 
-  /**
-   * Fast check if Google Maps is displaying a place details panel
-   */
   function isPlacePage() {
     return location.href.includes("/place/");
   }
 
-  /**
-   * Extract place details from DOM & URL without calling any Google APIs
-   */
   function extractPlaceData() {
     const mainPanel = document.querySelector('div[role="main"]') || document.body;
 
@@ -43,13 +36,11 @@
     let latitude = 43.76;
     let longitude = -79.41;
 
-    // Exact place coordinates in Google Maps URL: !3d43.xxxx!4d-79.xxxx
     const exactCoordMatch = location.href.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
     if (exactCoordMatch) {
       latitude = parseFloat(exactCoordMatch[1]);
       longitude = parseFloat(exactCoordMatch[2]);
     } else {
-      // Fallback: Map center coords: /@43.xxxx,-79.xxxx,17z
       const centerCoordMatch = location.href.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
       if (centerCoordMatch) {
         latitude = parseFloat(centerCoordMatch[1]);
@@ -128,9 +119,6 @@
     return hash;
   }
 
-  /**
-   * Display modern feedback toast
-   */
   function showToast(title, description, isSuccess = true) {
     let container = document.getElementById("greenoil-toast-container");
     if (!container) {
@@ -173,31 +161,28 @@
     }, 3200);
   }
 
-  /**
-   * Safely inject button with deduplication and state caching
-   */
-  async function tryInjectButton() {
+  function checkAndInject() {
     if (!isPlacePage()) {
-      currentInjectedPlaceId = null;
+      lastInjectedPlaceId = null;
+      const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
+      if (oldBtn) oldBtn.remove();
       return;
+    }
+
+    const placeData = extractPlaceData();
+    if (!placeData || !placeData.name || placeData.name === "Unknown Place") return;
+
+    const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
+    if (existingBtn) {
+      if (lastInjectedPlaceId === placeData.placeId && document.body.contains(existingBtn)) {
+        return;
+      }
+      existingBtn.remove();
     }
 
     const mainPanel = document.querySelector('div[role="main"]');
     if (!mainPanel) return;
 
-    const placeData = extractPlaceData();
-    if (!placeData.name || placeData.name === "Unknown Place") return;
-
-    // Check if already injected for this exact place
-    const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
-    if (existingBtn) {
-      if (currentInjectedPlaceId === placeData.placeId && document.body.contains(existingBtn)) {
-        return; // Already cleanly injected for this place
-      }
-      existingBtn.remove();
-    }
-
-    // Locate container for action buttons (Directions, Save, Share row)
     const dirBtn = mainPanel.querySelector('button[data-value="Directions"], button[data-value="路线"], button[aria-label*="Directions"], button[aria-label*="路线"], [data-item-id="directions"]');
     let targetContainer = dirBtn ? (dirBtn.closest('.m6QErb, .R6PtDb') || dirBtn.parentElement) : null;
 
@@ -212,7 +197,7 @@
 
     if (!targetContainer) return;
 
-    currentInjectedPlaceId = placeData.placeId;
+    lastInjectedPlaceId = placeData.placeId;
 
     const btn = document.createElement("button");
     btn.id = "greenoil-add-waypoint-btn";
@@ -221,7 +206,6 @@
     btn.title = "加入当前地点到 Green Oil 路线";
     btn.innerHTML = `${SVG_PLUS}<span>+ 途径点</span>`;
 
-    // Query status safely
     try {
       if (chrome.runtime?.id) {
         chrome.runtime.sendMessage({
@@ -237,9 +221,7 @@
           }
         });
       }
-    } catch {
-      // Ignore background communication errors
-    }
+    } catch {}
 
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -250,7 +232,7 @@
 
       try {
         if (!chrome.runtime?.id) {
-          showToast("提示", "扩展已重新加载，请刷新页面后重试", false);
+          showToast("提示", "扩展已重新加载，请刷新网页", false);
           btn.disabled = false;
           return;
         }
@@ -260,7 +242,7 @@
           waypoint: latestPlace
         }, (response) => {
           if (chrome.runtime.lastError) {
-            showToast("通信异常", "无法连接到后台服务，请刷新页面", false);
+            showToast("通信异常", "无法连接后台服务，请刷新网页", false);
             btn.disabled = false;
             return;
           }
@@ -292,61 +274,13 @@
     }
   }
 
-  function scheduleCheck() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      tryInjectButton();
-    }, 350);
-  }
+  // Pure gentle polling check every 800ms - zero interference with Google Maps
+  setInterval(checkAndInject, 800);
 
-  // Hook into browser history navigation
-  const originalPushState = history.pushState;
-  history.pushState = function(...args) {
-    const res = originalPushState.apply(this, args);
-    scheduleCheck();
-    return res;
-  };
-
-  const originalReplaceState = history.replaceState;
-  history.replaceState = function(...args) {
-    const res = originalReplaceState.apply(this, args);
-    scheduleCheck();
-    return res;
-  };
-
-  window.addEventListener("popstate", scheduleCheck);
-
-  // Relaxed mutation observer - strictly ignores non-place pages and its own elements
-  const observer = new MutationObserver((mutations) => {
-    if (!isPlacePage()) return;
-
-    for (let i = 0; i < mutations.length; i++) {
-      const target = mutations[i].target;
-      if (target && target.id && target.id.startsWith("greenoil-")) {
-        return; // Skip self mutations to prevent loop
-      }
-    }
-
-    scheduleCheck();
-  });
-
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
-
-  // Background URL polling as fallback (every 1 second)
-  setInterval(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      scheduleCheck();
-    }
-  }, 1000);
-
-  // Initial check
+  // Initial check on load
   if (document.readyState === "complete" || document.readyState === "interactive") {
-    scheduleCheck();
+    checkAndInject();
   } else {
-    document.addEventListener("DOMContentLoaded", scheduleCheck);
+    document.addEventListener("DOMContentLoaded", checkAndInject);
   }
 })();

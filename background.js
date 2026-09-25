@@ -1,11 +1,11 @@
 /**
  * Green Oil Chrome Extension - Background Service Worker
  * Manages route state persistence, extension badge, and background cloud sync.
+ * Completely standalone without ES module import dependencies for maximum compatibility.
  */
 
-import { GreenOilApi } from "./api.js";
-
 const DEFAULT_ORIGIN = "Green Oil Inc. 4490 Chesswood Dr Unit 3, North York, ON M3J 2B9";
+const WORKER_URL = "https://greenoil-api.ydxhjw4j5w.workers.dev";
 
 const INITIAL_STATE = {
   groups: [
@@ -24,15 +24,23 @@ const INITIAL_STATE = {
 
 // Initialize storage on install
 chrome.runtime.onInstalled.addListener(async () => {
-  const data = await chrome.storage.local.get(["groups", "activeGroupId", "authToken"]);
-  if (!data.groups || !Array.isArray(data.groups) || data.groups.length === 0) {
-    await chrome.storage.local.set(INITIAL_STATE);
+  try {
+    const data = await chrome.storage.local.get(["groups", "activeGroupId", "authToken"]);
+    if (!data.groups || !Array.isArray(data.groups) || data.groups.length === 0) {
+      await chrome.storage.local.set(INITIAL_STATE);
+    }
+    await updateBadge();
+  } catch (e) {
+    console.warn("onInstalled error:", e);
   }
-  await updateBadge();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  await updateBadge();
+  try {
+    await updateBadge();
+  } catch (e) {
+    console.warn("onStartup error:", e);
+  }
 });
 
 /**
@@ -61,14 +69,23 @@ async function updateBadge() {
 async function backgroundCloudSync() {
   try {
     const data = await chrome.storage.local.get(["groups", "activeGroupId", "authToken"]);
-    if (!data.authToken) return; // Unauthenticated, skip cloud sync
+    if (!data.authToken) return;
 
     const groups = data.groups || INITIAL_STATE.groups;
     const activeGroupId = data.activeGroupId || INITIAL_STATE.activeGroupId;
     const activeGroup = groups.find(g => g.id === activeGroupId) || groups[0];
     const origin = activeGroup ? activeGroup.origin : DEFAULT_ORIGIN;
 
-    const res = await GreenOilApi.saveMapRoutes(data.authToken, groups, activeGroupId, origin);
+    const resp = await fetch(`${WORKER_URL}/api/map-routes`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${data.authToken}`
+      },
+      body: JSON.stringify({ groups, activeGroupId, origin })
+    });
+
+    const res = await resp.json();
     if (res && res.success) {
       await chrome.storage.local.set({ lastSyncedAt: new Date().toISOString() });
       console.log("Auto-synced routes to cloud KV successfully");
@@ -159,5 +176,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   })();
 
-  return true; // Keep message port open for async response
+  return true;
 });
