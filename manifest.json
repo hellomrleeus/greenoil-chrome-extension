@@ -22,24 +22,15 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://www.google.com/maps/*",
-        "https://www.google.ca/maps/*",
-        "https://maps.google.com/*",
-        "https://maps.google.ca/*"
-      ],
-      "js": ["content.js"],
-      "css": ["content.css"],
-      "run_at": "document_idle"
-    }
-  ],
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting",
+    "tabs"
   ],
   "host_permissions": [
+    "https://www.google.com/maps/*",
+    "https://www.google.ca/maps/*",
     "https://greenoil-api.ydxhjw4j5w.workers.dev/*"
   ]
 }

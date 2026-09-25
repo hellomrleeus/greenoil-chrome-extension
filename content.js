@@ -4,8 +4,14 @@
  * Only injects the button when viewing a place. Extracts place details on-demand upon click.
  */
 
-(() => {
-  let lastProcessedKey = "";
+if (window.__greenoil_injected__) {
+  if (typeof window.__greenoil_check__ === "function") {
+    window.__greenoil_check__();
+  }
+} else {
+  window.__greenoil_injected__ = true;
+  (() => {
+    let lastProcessedKey = "";
 
   const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
   const SVG_CHECK = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
@@ -330,13 +336,16 @@
     }
   }
 
-  // Lightweight check every 800ms
-  setInterval(checkAndInject, 800);
+    window.__greenoil_check__ = checkAndInject;
 
-  // Initial check
-  if (document.readyState === "complete" || document.readyState === "interactive") {
-    checkAndInject();
-  } else {
-    document.addEventListener("DOMContentLoaded", checkAndInject);
-  }
-})();
+    // Lightweight check every 800ms
+    setInterval(checkAndInject, 800);
+
+    // Initial check
+    if (document.readyState === "complete" || document.readyState === "interactive") {
+      checkAndInject();
+    } else {
+      document.addEventListener("DOMContentLoaded", checkAndInject);
+    }
+  })();
+}

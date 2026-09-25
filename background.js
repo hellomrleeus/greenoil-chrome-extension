@@ -44,6 +44,30 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 /**
+ * Automatically inject content scripts on Google Maps when page completes loading
+ * Completely decoupled from initial navigation to guarantee 100% native load speed.
+ */
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  const url = tab?.url || changeInfo?.url || "";
+  if (!url || (!url.includes("google.com/maps") && !url.includes("google.ca/maps"))) return;
+
+  if (changeInfo.status === "complete" || (changeInfo.url && changeInfo.url.includes("/place/"))) {
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: ["content.css"]
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content.js"]
+      });
+    } catch (e) {
+      // Ignored if tab navigated away
+    }
+  }
+});
+
+/**
  * Update the toolbar extension badge count
  */
 async function updateBadge() {
