@@ -24,6 +24,7 @@
   z-index: 1000;
   outline: none;
   margin-left: 6px;
+  flex-shrink: 0 !important;
 }
 
 .greenoil-add-btn:hover {
