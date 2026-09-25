@@ -26,11 +26,25 @@
     "storage",
     "activeTab",
     "scripting",
-    "tabs"
+    "tabs",
+    "cookies"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.google.com/maps/*",
+        "https://www.google.ca/maps/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
   ],
   "host_permissions": [
     "https://www.google.com/maps/*",
     "https://www.google.ca/maps/*",
-    "https://greenoil-api.ydxhjw4j5w.workers.dev/*"
+    "https://greenoil-api.ydxhjw4j5w.workers.dev/*",
+    "https://mis.greenoilinc.com/*",
+    "https://nominatim.openstreetmap.org/*"
   ]
 }

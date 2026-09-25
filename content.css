@@ -207,3 +207,561 @@
     transform: translateY(0) scale(1);
   }
 }
+
+/* ===================================================
+   MIS Match Button & Disabled / Loading States
+   =================================================== */
+
+.greenoil-mis-circle {
+  background-color: #059669 !important;
+  color: #ffffff !important;
+}
+
+.greenoil-mis-disabled .greenoil-action-circle {
+  background-color: #9ca3af !important;
+  color: #f3f4f6 !important;
+  opacity: 0.55 !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+  filter: grayscale(0.8) !important;
+}
+
+.greenoil-mis-disabled .greenoil-action-label {
+  color: #9ca3af !important;
+  cursor: not-allowed !important;
+}
+
+.greenoil-mis-disabled:hover .greenoil-action-btn {
+  transform: none !important;
+}
+
+.greenoil-mis-disabled:hover .greenoil-action-circle {
+  background-color: #9ca3af !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.greenoil-action-container.greenoil-loading .greenoil-action-circle svg {
+  animation: greenoil-spin 1s linear infinite !important;
+}
+
+@keyframes greenoil-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ===================================================
+   Google Maps Pins Overlay Layer
+   =================================================== */
+
+#greenoil-pins-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 999;
+  overflow: hidden;
+}
+
+.greenoil-map-pin {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translate(-50%, -100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.35));
+}
+
+.greenoil-map-pin:hover {
+  transform: translate(-50%, -108%) scale(1.12);
+  z-index: 1002 !important;
+}
+
+/* Waypoint Pin (#1, #2, #3...) */
+.greenoil-waypoint-pin .greenoil-pin-marker {
+  position: relative;
+  width: 30px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.greenoil-waypoint-pin .greenoil-pin-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.greenoil-waypoint-pin .greenoil-pin-number {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+}
+
+/* MIS Contracted Pin */
+.greenoil-mis-pin .greenoil-mis-pin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 7px;
+  background: linear-gradient(135deg, #278a53 0%, #1e6b40 100%);
+  color: #ffffff;
+  border: 1.5px solid #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.greenoil-mis-pin-badge svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+
+/* Radar pulse animation for newly matched MIS pins */
+.greenoil-pin-radar-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin-top: -14px;
+  margin-left: -14px;
+  border-radius: 50%;
+  border: 2px solid #10b981;
+  pointer-events: none;
+  animation: greenoil-radar-pulse 2s ease-out infinite;
+}
+
+@keyframes greenoil-radar-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* Pin Hover Tooltip */
+.greenoil-pin-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1f2937;
+  color: #ffffff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  transform: translate(-50%, 4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  z-index: 1005;
+}
+
+.greenoil-map-pin:hover .greenoil-pin-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Floating Pins Stats / Filter Controller */
+#greenoil-pins-control-bar {
+  position: fixed;
+  bottom: 24px;
+  right: 68px;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  padding: 6px 10px;
+  border-radius: 20px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  user-select: none;
+}
+
+.greenoil-control-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.greenoil-control-pill.waypoint-pill {
+  background: #ecfdf5;
+  color: #065f46;
+  border-color: #a7f3d0;
+}
+
+.greenoil-control-pill.mis-pill {
+  background: #f0fdf4;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.greenoil-control-clear {
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  transition: color 0.15s ease;
+}
+
+.greenoil-control-clear:hover {
+  color: #ef4444;
+}
+
+/* ===================================================
+   MIS Customer Details Floating Modal (Screenshot Aligned)
+   =================================================== */
+
+#greenoil-mis-modal {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: greenoil-modal-fade 0.2s ease-out forwards;
+}
+
+@keyframes greenoil-modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.greenoil-mis-card {
+  background: #ffffff;
+  border-radius: 10px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.15);
+  width: 100%;
+  max-width: 890px;
+  overflow: hidden;
+  border: 1px solid #d1d5db;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  animation: greenoil-card-scale 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes greenoil-card-scale {
+  from {
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Card Header */
+.greenoil-mis-header {
+  padding: 14px 18px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.greenoil-mis-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.greenoil-mis-name-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.greenoil-mis-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.greenoil-mis-code-badge {
+  font-size: 11px;
+  font-weight: 600;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #bfdbfe;
+}
+
+.greenoil-mis-sts-badge {
+  font-size: 11px;
+  font-weight: 600;
+  background: #ecfdf5;
+  color: #047857;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #a7f3d0;
+}
+
+.greenoil-mis-close-btn {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.greenoil-mis-close-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.greenoil-mis-close-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.greenoil-mis-addr-text {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+/* Table Section Matching Screenshot */
+.greenoil-mis-table-wrapper {
+  overflow-x: auto;
+  background: #ffffff;
+}
+
+.greenoil-mis-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.greenoil-mis-table thead tr {
+  background-color: #278a53 !important; /* Screenshot exact green */
+  color: #ffffff !important;
+}
+
+.greenoil-mis-table thead th {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+  letter-spacing: 0.1px;
+  user-select: none;
+}
+
+.greenoil-mis-table thead th span.th-icon {
+  display: inline-block;
+  margin-left: 3px;
+  vertical-align: middle;
+}
+
+.greenoil-mis-table tbody tr {
+  border-bottom: 1px solid #e5e7eb;
+  transition: background-color 0.12s ease;
+}
+
+.greenoil-mis-table tbody tr:hover {
+  background-color: #f9fafb;
+}
+
+.greenoil-mis-table tbody td {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: #111827;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Container Chips Matching Screenshot */
+.chip-container-oil {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fef3c7;
+  color: #78350f;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 11px;
+  margin-right: 4px;
+}
+
+.chip-container-drum {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #f3f4f6;
+  color: #374151;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.chip-container-oil svg,
+.chip-container-drum svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* Card Action Footer */
+.greenoil-mis-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+}
+
+.greenoil-mis-btn-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background-color: #059669;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  transition: all 0.15s ease;
+}
+
+.greenoil-mis-btn-add:hover {
+  background-color: #047857;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.18);
+}
+
+.greenoil-mis-btn-add svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.greenoil-mis-btn-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 14px;
+  background: #ffffff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.greenoil-mis-btn-link:hover {
+  background: #f3f4f6;
+  color: #111827;
+  border-color: #9ca3af;
+}
+
+.greenoil-mis-btn-link svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* ===================================================
+   MIS Pin Badge beside Place Heading
+   =================================================== */
+
+.greenoil-heading-mis-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  vertical-align: middle !important;
+  margin-left: 10px !important;
+  padding: 3px 9px !important;
+  background: linear-gradient(135deg, #278a53 0%, #1e6b40 100%) !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.2px !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  box-shadow: 0 2px 6px rgba(39, 138, 83, 0.35) !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  animation: greenoil-badge-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards !important;
+}
+
+.greenoil-heading-mis-badge:hover {
+  transform: translateY(-1px) scale(1.06) !important;
+  box-shadow: 0 4px 10px rgba(39, 138, 83, 0.45) !important;
+  background: linear-gradient(135deg, #2ea362 0%, #247d4b 100%) !important;
+}
+
+.greenoil-heading-mis-badge:active {
+  transform: translateY(1px) scale(0.98) !important;
+}
+
+.greenoil-heading-mis-badge svg {
+  width: 13px !important;
+  height: 13px !important;
+  fill: #ffffff !important;
+  flex-shrink: 0 !important;
+}
+
+@keyframes greenoil-badge-pop {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
