@@ -413,6 +413,9 @@ class PopupController {
     }
 
     // 4. Update Batch Bar
+    if (this.elBtnOptimizeRoute) {
+      this.elBtnOptimizeRoute.disabled = waypoints.length <= 1;
+    }
     this.updateBatchBar(filteredWaypoints, waypoints.length);
 
     // 5. Render Waypoints List

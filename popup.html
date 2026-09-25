@@ -40,10 +40,6 @@
           <!-- Rendered dynamically: 5 color route buttons -->
         </div>
         <div class="route-toolbar-actions">
-          <button id="btnOptimizeRoute" class="btn-subtle" title="按距离与最优经停顺序优化当前路线">
-            <svg viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-            优化排序
-          </button>
           <button id="btnClearRoute" class="btn-subtle btn-danger-subtle" title="清空当前路线所有途径点">
             <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
             清空
@@ -88,6 +84,10 @@
         </label>
       </div>
       <div class="batch-right">
+        <button id="btnOptimizeRoute" class="btn-batch-action btn-optimize-action" title="按距离与最优经停顺序优化当前路线">
+          <svg viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+          优化排序
+        </button>
         <button id="btnLockSelected" class="btn-batch-action" title="将所选站点锁定为组合">
           <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
           锁定组合

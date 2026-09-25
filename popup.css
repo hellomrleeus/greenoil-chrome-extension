@@ -445,6 +445,22 @@ html, body {
   border-color: var(--danger-border);
 }
 
+.btn-batch-action.btn-optimize-action {
+  color: var(--theme-color);
+  border-color: var(--theme-border);
+  background-color: var(--theme-light);
+  font-weight: 600;
+}
+
+.btn-batch-action.btn-optimize-action:hover {
+  background-color: var(--theme-color);
+  color: #ffffff;
+}
+
+.btn-batch-action.btn-optimize-action svg {
+  fill: currentColor;
+}
+
 /* Waypoints List */
 .waypoints-list {
   flex: 1;
