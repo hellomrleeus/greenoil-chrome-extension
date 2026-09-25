@@ -1,93 +1,96 @@
 /* Green Oil Chrome Extension - Google Maps Injected Styles */
 
 /* Action Item Container (Matches Google Maps circular action buttons) */
-.greenoil-action-item {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  cursor: pointer;
-  user-select: none;
-  border: none;
-  background: transparent;
-  padding: 0;
-  margin: 0 4px;
+.greenoil-action-container {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
   flex-shrink: 0 !important;
-  outline: none;
-  text-decoration: none;
-  vertical-align: top;
-  transition: transform 0.15s ease;
-  z-index: 1000;
+  vertical-align: top !important;
 }
 
-.greenoil-action-item:hover {
+.greenoil-action-btn {
+  display: inline-flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: none !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  padding: 0 !important;
+  outline: none !important;
+  user-select: none !important;
+  transition: transform 0.15s ease !important;
+}
+
+.greenoil-action-btn:hover {
   transform: translateY(-1px);
 }
 
-.greenoil-action-item:active {
+.greenoil-action-btn:active {
   transform: translateY(1px);
 }
 
 /* 40x40 Round Action Circle (Emerald Green) */
 .greenoil-action-circle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background-color: #059669;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 40px !important;
+  height: 40px !important;
+  border-radius: 50% !important;
+  background-color: #059669 !important;
   color: #ffffff !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.08);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.08) !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  flex-shrink: 0 !important;
 }
 
-.greenoil-action-item:hover .greenoil-action-circle {
-  background-color: #047857;
-  box-shadow: 0 3px 8px rgba(5, 150, 105, 0.3);
+.greenoil-action-btn:hover .greenoil-action-circle {
+  background-color: #047857 !important;
+  box-shadow: 0 3px 8px rgba(5, 150, 105, 0.3) !important;
 }
 
 .greenoil-action-circle svg {
-  width: 20px;
-  height: 20px;
-  fill: currentColor;
-  flex-shrink: 0;
+  width: 20px !important;
+  height: 20px !important;
+  fill: currentColor !important;
+  flex-shrink: 0 !important;
 }
 
 /* Added State */
-.greenoil-action-item.greenoil-added .greenoil-action-circle {
-  background-color: #ecfdf5;
-  border: 1.5px solid #059669;
+.greenoil-action-container.greenoil-added .greenoil-action-circle {
+  background-color: #ecfdf5 !important;
+  border: 1.5px solid #059669 !important;
   color: #059669 !important;
-  box-shadow: none;
+  box-shadow: none !important;
 }
 
-.greenoil-action-item.greenoil-added:hover .greenoil-action-circle {
-  background-color: #d1fae5;
+.greenoil-action-container.greenoil-added:hover .greenoil-action-circle {
+  background-color: #d1fae5 !important;
 }
 
 /* Bottom Text Label Under the Circle */
 .greenoil-action-label {
-  font-family: "Google Sans Text", "Google Sans", Roboto, "Noto Sans TC", -apple-system, sans-serif;
-  font-size: 12px;
-  font-weight: 500;
-  color: #047857;
-  margin-top: 4px;
-  text-align: center;
-  line-height: 16px;
-  letter-spacing: 0.1px;
-  white-space: nowrap;
-  transition: color 0.2s ease;
+  font-family: "Google Sans Text", "Google Sans", Roboto, "Noto Sans TC", -apple-system, sans-serif !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: #047857 !important;
+  margin-top: 4px !important;
+  text-align: center !important;
+  line-height: 16px !important;
+  letter-spacing: 0.1px !important;
+  white-space: nowrap !important;
+  transition: color 0.2s ease !important;
 }
 
-.greenoil-action-item:hover .greenoil-action-label {
-  color: #065f46;
+.greenoil-action-btn:hover .greenoil-action-label {
+  color: #065f46 !important;
 }
 
-.greenoil-action-item.greenoil-added .greenoil-action-label {
-  color: #059669;
-  font-weight: 600;
+.greenoil-action-container.greenoil-added .greenoil-action-label {
+  color: #059669 !important;
+  font-weight: 600 !important;
 }
 
 /* Floating Fallback Pill for Google Maps panels */

@@ -246,21 +246,15 @@ if (window.__greenoil_injected__) {
       }
 
       const mainPanel = document.querySelector('div[role="main"]');
-      if (!mainPanel) return;
-
-      const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
-      const placeName = h1 ? h1.textContent.trim() : "";
-      const currentKey = currentUrl + "|" + placeName;
-
-      // 2. Already injected and place hasn't changed
-      const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
-      if (existingBtn && document.body.contains(existingBtn) && currentKey === lastProcessedKey) {
+      if (!mainPanel) {
+        const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
+        if (oldBtn) oldBtn.remove();
+        lastProcessedKey = "";
         return;
       }
 
-      // 3. Find target item and row: Directions button item container
+      // 2. MUST find Directions button (只能出现在地点信息的那排按钮中，绝不出现在营业时间等子面板)
       const dirBtn = mainPanel.querySelector([
-        '[data-item-id="directions"]',
         'button[data-value="Directions"]',
         'button[data-value="路线"]',
         'button[data-value="路線"]',
@@ -271,42 +265,64 @@ if (window.__greenoil_injected__) {
         'button[aria-label*="规划"]',
         'button[aria-label*="規劃"]',
         'a[data-value="Directions"]',
-        'a[data-item-id="directions"]'
+        'a[data-item-id="directions"]',
+        '[data-item-id="directions"]'
       ].join(', '));
 
-      let targetItem = null;
-      let targetRow = null;
-
-      if (dirBtn) {
-        targetItem = dirBtn.closest('.etWJQ, [role="group"]') || dirBtn.parentElement;
-        targetRow = targetItem ? targetItem.parentElement : null;
-      } else {
-        targetRow = mainPanel.querySelector('.m6QErb.Pf6ghf, .m6QErb[aria-label], .m6QErb');
+      // IF NOT IN PLACE MAIN ACTION ROW: REMOVE BUTTON AND EXIT IMMEDIATELY
+      if (!dirBtn || !dirBtn.offsetParent) {
+        const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
+        if (oldBtn) oldBtn.remove();
+        lastProcessedKey = "";
+        return;
       }
 
-      if (!targetRow) return;
+      const dirItem = dirBtn.closest('.etWJQ') || dirBtn.parentElement;
+      const targetRow = dirItem ? dirItem.parentElement : null;
 
-      // Clean up previous button if place changed
+      // Must be the main actions row (has class m6QErb)
+      if (!targetRow || !targetRow.classList.contains('m6QErb')) {
+        const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
+        if (oldBtn) oldBtn.remove();
+        lastProcessedKey = "";
+        return;
+      }
+
+      const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
+      const placeName = h1 ? h1.textContent.trim() : "";
+      const currentKey = currentUrl + "|" + placeName;
+
+      // Already injected and in place
+      const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
+      if (existingBtn && document.body.contains(existingBtn) && currentKey === lastProcessedKey && targetRow.contains(existingBtn)) {
+        return;
+      }
+
       if (existingBtn) existingBtn.remove();
       lastProcessedKey = currentKey;
 
-      const btn = document.createElement("div");
-      btn.id = "greenoil-add-waypoint-btn";
-      btn.className = "greenoil-action-item";
-      btn.setAttribute("role", "button");
-      btn.setAttribute("tabindex", "0");
+      // Create container matching Google's .etWJQ.jym1ob.kdfrQc.WY7ZIb
+      const container = document.createElement("div");
+      container.id = "greenoil-add-waypoint-btn";
+      container.className = "etWJQ jym1ob kdfrQc WY7ZIb greenoil-action-container";
+
+      const btn = document.createElement("button");
+      btn.className = "S9kvJb greenoil-action-btn";
+      btn.type = "button";
+      btn.setAttribute("aria-label", "+ 途径点");
       btn.title = "加入当前地点到 Green Oil 路线";
 
-      const circle = document.createElement("div");
-      circle.className = "greenoil-action-circle";
+      const circle = document.createElement("span");
+      circle.className = "DVeyrd greenoil-action-circle";
       circle.innerHTML = SVG_PLUS;
 
       const label = document.createElement("div");
-      label.className = "greenoil-action-label";
+      label.className = "R8c4Qb fontLabelMedium greenoil-action-label";
       label.textContent = "+ 途径点";
 
       btn.appendChild(circle);
       btn.appendChild(label);
+      container.appendChild(btn);
 
       // Check if place is already in the active route
       try {
@@ -320,7 +336,7 @@ if (window.__greenoil_injected__) {
             if (resp && resp.inRoute) {
               circle.innerHTML = SVG_CHECK;
               label.textContent = "已添加";
-              btn.classList.add("greenoil-added");
+              container.classList.add("greenoil-added");
             }
           });
         }
@@ -330,7 +346,7 @@ if (window.__greenoil_injected__) {
         e.stopPropagation();
         e.preventDefault();
 
-        if (btn.classList.contains("greenoil-added")) {
+        if (container.classList.contains("greenoil-added")) {
           showToast("提示", "该地点已在当前路线中", true);
           return;
         }
@@ -361,12 +377,12 @@ if (window.__greenoil_injected__) {
             if (response && response.success) {
               circle.innerHTML = SVG_CHECK;
               label.textContent = "已添加";
-              btn.classList.add("greenoil-added");
+              container.classList.add("greenoil-added");
               showToast("已加入路线", `${latestPlace.name} (当前路线共 ${response.count} 个途径点)`);
             } else if (response && response.alreadyExists) {
               circle.innerHTML = SVG_CHECK;
               label.textContent = "已在路线";
-              btn.classList.add("greenoil-added");
+              container.classList.add("greenoil-added");
               showToast("提示", `${latestPlace.name} 已存在于当前路线中`, false);
             } else {
               label.textContent = "+ 途径点";
@@ -381,13 +397,8 @@ if (window.__greenoil_injected__) {
         }
       });
 
-      if (targetItem && targetItem.nextSibling) {
-        targetRow.insertBefore(btn, targetItem.nextSibling);
-      } else if (targetItem) {
-        targetRow.appendChild(btn);
-      } else {
-        targetRow.prepend(btn);
-      }
+      // POINT 1: Place as the FIRST button in the row (before dirItem)!
+      targetRow.insertBefore(container, dirItem);
     } catch (err) {
       console.warn("[GreenOil] Injection check caught error:", err);
     }
