@@ -117,6 +117,11 @@ export function toEnglishRestaurantName(name, nameEn) {
  * Standardize opening hours text into clean English format.
  * Matches greenoil original formatOpeningHoursEnglish implementation.
  */
+/**
+ * Standardize opening hours text into clean English format.
+ * Supports multi-delimiter splitting (pipes, newlines, semicolons),
+ * 12h AM/PM to 24h conversion, holiday note stripping, and consecutive day grouping.
+ */
 export function formatOpeningHoursEnglish(rawHours) {
   if (!rawHours) return "N/A";
   let rawStr = typeof rawHours === "string" ? rawHours : (Array.isArray(rawHours) ? rawHours.join("\n") : String(rawHours));
@@ -125,58 +130,159 @@ export function formatOpeningHoursEnglish(rawHours) {
     return "N/A";
   }
 
-  if (/^(?:24\s*(?:hours|小时|小時)|open\s*24|全天营业|全天營業|24\/7|24시간\s*영업)$/i.test(cleanStr)) {
+  // Quick 24-hour check
+  if (/^(?:24\s*(?:hours?|小时|小時)?(?:\s*(?:营业|營業))?|open\s*24(?:\s*hours?)?|全天营业|全天營業|24\/7|24시간(?:\s*영업)?)$/i.test(cleanStr)) {
     return "Open 24 hours";
   }
 
   const DAY_MAP = {
-    "星期一": "Mon", "周一": "Mon", "礼拜一": "Mon", "禮拜一": "Mon", "월요일": "Mon", "monday": "Mon", "mon": "Mon",
-    "星期二": "Tue", "周二": "Tue", "礼拜二": "Tue", "禮拜二": "Tue", "화요일": "Tue", "tuesday": "Tue", "tue": "Tue",
-    "星期三": "Wed", "周三": "Wed", "礼拜三": "Wed", "禮拜三": "Wed", "수요일": "Wed", "wednesday": "Wed", "wed": "Wed",
-    "星期四": "Thu", "周四": "Thu", "礼拜四": "Thu", "禮拜四": "Thu", "목요일": "Thu", "thursday": "Thu", "thu": "Thu",
-    "星期五": "Fri", "周五": "Fri", "礼拜五": "Fri", "禮拜五": "Fri", "금요일": "Fri", "friday": "Fri", "fri": "Fri",
-    "星期六": "Sat", "周六": "Sat", "礼拜六": "Sat", "禮拜六": "Sat", "토요일": "Sat", "saturday": "Sat", "sat": "Sat",
-    "星期日": "Sun", "星期天": "Sun", "周日": "Sun", "周天": "Sun", "礼拜天": "Sun", "禮拜天": "Sun", "礼拜日": "Sun", "禮拜日": "Sun", "일요일": "Sun", "sunday": "Sun", "sun": "Sun"
+    "monday": "Mon", "mon": "Mon", "星期一": "Mon", "周一": "Mon", "礼拜一": "Mon", "禮拜一": "Mon", "월요일": "Mon", "월": "Mon",
+    "tuesday": "Tue", "tue": "Tue", "tues": "Tue", "星期二": "Tue", "周二": "Tue", "礼拜二": "Tue", "禮拜二": "Tue", "화요일": "Tue", "화": "Tue",
+    "wednesday": "Wed", "wed": "Wed", "星期三": "Wed", "周三": "Wed", "礼拜三": "Wed", "禮拜三": "Wed", "수요일": "Wed", "수": "Wed",
+    "thursday": "Thu", "thu": "Thu", "thur": "Thu", "thurs": "Thu", "星期四": "Thu", "周四": "Thu", "礼拜四": "Thu", "禮拜四": "Thu", "목요일": "Thu", "목": "Thu",
+    "friday": "Fri", "fri": "Fri", "星期五": "Fri", "周五": "Fri", "礼拜五": "Fri", "禮拜五": "Fri", "금요일": "Fri", "금": "Fri",
+    "saturday": "Sat", "sat": "Sat", "星期六": "Sat", "周六": "Sat", "礼拜六": "Sat", "禮拜六": "Sat", "토요일": "Sat", "토": "Sat",
+    "sunday": "Sun", "sun": "Sun", "星期日": "Sun", "星期天": "Sun", "周日": "Sun", "周天": "Sun", "礼拜天": "Sun", "禮拜天": "Sun", "礼拜日": "Sun", "禮拜日": "Sun", "일요일": "Sun", "일": "Sun"
   };
 
   const DAYS_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const DAY_INDEX = { "Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6 };
 
-  const lines = cleanStr.split(/[\r\n]+| · |·/);
+  // Parse time token (e.g. "11:00 AM", "11:00am", "下午 9:30", "08:30") to "HH:MM"
+  const parseTimeToken = (token) => {
+    token = token.trim();
+    const m = token.match(/^(?:(上午|下午|早上|晚上|中午)\s*)?(\d{1,2})(?::(\d{2}))?(?:\s*(am|pm|a\.m\.|p\.m\.))?$/i);
+    if (!m) return token;
+
+    const zhMod = m[1];
+    let h = parseInt(m[2], 10);
+    const minute = m[3] ? parseInt(m[3], 10) : 0;
+    const enMod = m[4];
+
+    let isPm = false;
+    if (enMod && enMod.toLowerCase().startsWith("p")) isPm = true;
+    else if (zhMod && (zhMod === "下午" || zhMod === "晚上")) isPm = true;
+
+    if (isPm) {
+      if (h < 12) h += 12;
+    } else {
+      if ((enMod && enMod.toLowerCase().startsWith("a")) || (zhMod && (zhMod === "上午" || zhMod === "早上"))) {
+        if (h === 12) h = 0;
+      }
+    }
+    return `${String(h).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  };
+
+  // Normalize hours value (e.g. "08:30–16:00", "休息", "11:00–15:00, 17:00–22:00 營業時間可能不同")
+  const normalizeVal = (valRaw) => {
+    let v = valRaw
+      .replace(/營業時間可能不同|营业时间可能不同|hours?\s+might\s+differ/gi, "")
+      .replace(/\(.*?\)|（.*?）/g, "")
+      .replace(/ 到 /g, "-")
+      .replace(/ to /gi, "-")
+      .replace(/ - /g, "-")
+      .trim();
+
+    if (/^(?:closed|close|off|day off|休息|打烊|不营业|不營業|未营业|未營業|휴무)$/i.test(v) || /^休息|^打烊|^不营业|^不營業|^closed/i.test(v)) {
+      return "Closed";
+    }
+    if (/24\s*(?:hours|小时|小時)|open\s*24|全天营业|全天營業|24\/7|24시간/i.test(v)) {
+      return "Open 24 hours";
+    }
+
+    const shifts = v.split(/[,，;；]/).map(s => s.trim()).filter(Boolean);
+    const normShifts = [];
+    for (const s of shifts) {
+      const parts = s.split(/\s*(?:[–—~至到]|-)\s*/);
+      if (parts.length === 2) {
+        const t1 = parseTimeToken(parts[0]);
+        const t2 = parseTimeToken(parts[1]);
+        normShifts.push(`${t1}-${t2}`);
+      } else {
+        normShifts.push(s);
+      }
+    }
+    return normShifts.length > 0 ? normShifts.join(", ") : v;
+  };
+
+  // 1. Normalize day delimiters: pipe (|), semicolon (;), middle dot (·), newlines (\n)
+  let s = cleanStr
+    .replace(/[|\uFF5C;\uFF1B]+/g, "\n")
+    .replace(/ · |·/g, "\n")
+    .replace(/,\s*(?=(?:星期|周|礼拜|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon\b|Tue\b|Wed\b|Thu\b|Fri\b|Sat\b|Sun\b|월|화|수|목|금|토|일))/gi, "\n");
+
+  const lines = s.split(/[\r\n]+/);
   const parsedDays = {};
-  let anyMatched = false;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const colonIdx = trimmed.search(/[:：]/);
-    if (colonIdx === -1) continue;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
 
-    const dayPart = trimmed.substring(0, colonIdx).trim().toLowerCase();
-    const valPart = trimmed.substring(colonIdx + 1).trim();
+    let dayRaw = "";
+    let valRaw = "";
 
-    let dayEn = null;
-    for (const [k, v] of Object.entries(DAY_MAP)) {
-      if (dayPart === k.toLowerCase() || dayPart.replace(/[:：]/g, "") === k.toLowerCase()) {
-        dayEn = v;
-        break;
+    const colonIdx = line.search(/[:：]/);
+    if (colonIdx !== -1) {
+      dayRaw = line.substring(0, colonIdx).trim();
+      valRaw = line.substring(colonIdx + 1).trim();
+    } else {
+      const matchSpace = line.match(/^([^\d]+)\s+([\d].*)$/);
+      if (matchSpace) {
+        dayRaw = matchSpace[1].trim();
+        valRaw = matchSpace[2].trim();
+      } else {
+        continue;
       }
     }
 
-    if (dayEn) {
-      anyMatched = true;
-      let valEn = valPart;
-      if (/^(?:closed|close|off|day off|休息|打烊|不营业|不營業|未营业|未營業|휴무)$/i.test(valPart) || /休息|打烊|휴무/i.test(valPart)) {
-        valEn = "Closed";
-      } else if (/24\s*(?:hours|小时|小時)|open\s*24|全天营业|全天營業|24\/7|24시간/i.test(valPart)) {
-        valEn = "Open 24 hours";
+    // Strip holiday or extra notes from day name, e.g. "星期三(全國真相與和解日)" -> "星期三"
+    const dayClean = dayRaw.replace(/\(.*?\)|（.*?）/g, "").trim().toLowerCase();
+
+    // Check day range (e.g. "Daily", "Mon-Thu", "Fri-Sun", "周一至周五", "Mon-Sun")
+    let targetDays = [];
+    if (/^(?:daily|everyday|every\s*day|每天|天天|7\s*days)$/i.test(dayClean)) {
+      targetDays = [...DAYS_ORDER];
+    } else {
+      const rangeMatch = dayClean.match(/^([a-z\u4e00-\u9fa5]+)\s*(?:[–—\-~至到]|\bto\b)\s*([a-z\u4e00-\u9fa5]+)$/i);
+      if (rangeMatch) {
+        let sDay = null;
+        let eDay = null;
+        for (const [k, v] of Object.entries(DAY_MAP)) {
+          if (rangeMatch[1] === k.toLowerCase()) { sDay = v; break; }
+        }
+        for (const [k, v] of Object.entries(DAY_MAP)) {
+          if (rangeMatch[2] === k.toLowerCase()) { eDay = v; break; }
+        }
+        if (sDay && eDay) {
+          const sIdx = DAY_INDEX[sDay];
+          const eIdx = DAY_INDEX[eDay];
+          let cur = sIdx;
+          while (true) {
+            targetDays.push(DAYS_ORDER[cur]);
+            if (cur === eIdx) break;
+            cur = (cur + 1) % 7;
+          }
+        }
       } else {
-        valEn = valPart.replace(/[–—~至到]/g, "-").replace(/\s+/g, " ").trim();
+        for (const [k, v] of Object.entries(DAY_MAP)) {
+          if (dayClean === k.toLowerCase()) {
+            targetDays = [v];
+            break;
+          }
+        }
       }
-      parsedDays[dayEn] = valEn;
+    }
+
+    if (targetDays.length === 0) continue;
+
+    const valNorm = normalizeVal(valRaw);
+    for (const d of targetDays) {
+      parsedDays[d] = valNorm;
     }
   }
 
-  if (!anyMatched) {
+  // Fallback if no structured days were extracted
+  if (Object.keys(parsedDays).length === 0) {
     return cleanStr
       .replace(/24小时营业|24小時營業|全天营业|全天營業/g, "Open 24 hours")
       .replace(/休息|打烊|不营业|不營業/g, "Closed")
@@ -187,36 +293,44 @@ export function formatOpeningHoursEnglish(rawHours) {
       .replace(/星期五|周五/g, "Fri")
       .replace(/星期六|周六/g, "Sat")
       .replace(/星期日|周日|星期天/g, "Sun")
+      .replace(/[|\uFF5C]/g, ",")
       .replace(/\n+/g, ", ");
   }
 
-  if (DAYS_ORDER.every(d => d in parsedDays)) {
-    const groups = [];
-    let curVal = parsedDays[DAYS_ORDER[0]];
-    let startIdx = 0;
-    for (let i = 1; i < DAYS_ORDER.length; i++) {
-      const v = parsedDays[DAYS_ORDER[i]];
-      if (v !== curVal) {
-        groups.push({ start: startIdx, end: i - 1, val: curVal });
-        startIdx = i;
-        curVal = v;
-      }
+  // Group consecutive days that share identical schedules
+  const presentDays = DAYS_ORDER.filter(d => d in parsedDays);
+  if (presentDays.length === 0) return "N/A";
+
+  const groups = [];
+  let curVal = parsedDays[presentDays[0]];
+  let curList = [presentDays[0]];
+
+  for (let i = 1; i < presentDays.length; i++) {
+    const d = presentDays[i];
+    const val = parsedDays[d];
+    const prevD = presentDays[i - 1];
+
+    if (DAY_INDEX[d] === DAY_INDEX[prevD] + 1 && val === curVal) {
+      curList.push(d);
+    } else {
+      groups.push({ start: curList[0], end: curList[curList.length - 1], val: curVal });
+      curList = [d];
+      curVal = val;
     }
-    groups.push({ start: startIdx, end: DAYS_ORDER.length - 1, val: curVal });
-
-    const resultParts = groups.map(g => {
-      let label = "";
-      if (g.start === g.end) {
-        label = DAYS_ORDER[g.start];
-      } else if (g.start === 0 && g.end === 6) {
-        label = "Mon-Sun";
-      } else {
-        label = `${DAYS_ORDER[g.start]}-${DAYS_ORDER[g.end]}`;
-      }
-      return `${label}: ${g.val}`;
-    });
-    return resultParts.join(", ");
   }
+  groups.push({ start: curList[0], end: curList[curList.length - 1], val: curVal });
 
-  return Object.entries(parsedDays).map(([d, v]) => `${d}: ${v}`).join(", ");
+  const resultParts = groups.map(g => {
+    let label = "";
+    if (g.start === g.end) {
+      label = g.start;
+    } else if (g.start === "Mon" && g.end === "Sun") {
+      label = "Mon-Sun";
+    } else {
+      label = `${g.start}-${g.end}`;
+    }
+    return `${label}: ${g.val}`;
+  });
+
+  return resultParts.join(", ");
 }

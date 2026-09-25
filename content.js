@@ -134,8 +134,12 @@ if (window.__greenoil_injected__) {
     const ohTable = mainPanel.querySelector("table.eK4R0e, table.WgFkxc, [data-item-id*='oh'] table, div[role='main'] table");
     if (ohTable) {
       const rows = Array.from(ohTable.querySelectorAll("tr")).map(tr => {
-        const cells = Array.from(tr.querySelectorAll("td, th")).map(c => c.textContent.trim());
-        if (cells.length >= 2) return `${cells[0]}: ${cells[1]}`;
+        const dayTd = tr.querySelector("td.ylH6lf") || tr.querySelector("td:first-child");
+        const dayText = dayTd ? (dayTd.querySelector("div")?.textContent.trim() || dayTd.textContent.trim()) : "";
+        const valTd = tr.querySelector("td.mxowUb") || tr.querySelector("td:nth-child(2)");
+        const lis = valTd ? Array.from(valTd.querySelectorAll("li")).map(li => li.textContent.trim()) : [];
+        const valText = lis.length > 0 ? lis.join(", ") : (valTd ? valTd.textContent.trim() : "");
+        if (dayText) return `${dayText}: ${valText}`;
         return tr.textContent.trim();
       }).filter(Boolean);
       if (rows.length > 0) {
@@ -152,7 +156,6 @@ if (window.__greenoil_injected__) {
           openingHours = aria
             .replace(/^(?:營業時間|营业时间|Hours)[:：]?\s*/i, "")
             .replace(/;\s*/g, "\n")
-            .replace(/,\s*/g, ": ")
             .replace(/ 到 /g, "–")
             .replace(/ to /gi, "–");
         } else {
