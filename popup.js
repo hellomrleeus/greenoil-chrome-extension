@@ -78,6 +78,7 @@ const SVG_UNLOCK = `<svg viewBox="0 0 24 24"><path d="M12 17c1.1 0 2-.9 2-2s-.9-
 const SVG_STAR = `<svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>`;
 const SVG_CLOCK = `<svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>`;
 const SVG_EMPTY = `<svg class="empty-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
+const SVG_PIN_MINI = `<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
 
 function getHaversineDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // km
@@ -473,8 +474,11 @@ class PopupController {
 
       card.innerHTML = `
         <input type="checkbox" class="card-checkbox custom-checkbox" ${isSelected ? 'checked' : ''} title="选择此站点">
-        <div class="card-index">#${index + 1}</div>
-        <div class="card-main">
+        <div class="card-index" title="点击在地图上平滑定位到此地点" role="button" tabindex="0">
+          <span class="index-num">#${index + 1}</span>
+          <span class="index-pin">${SVG_PIN_MINI}</span>
+        </div>
+        <div class="card-main" title="点击在地图上平滑定位到此地点" role="button" tabindex="0">
           <div class="card-header-row">
             <span class="card-name" title="${this.escapeHtml(displayName)}">${this.escapeHtml(displayName)}</span>
             ${lockedBadgeHtml}
@@ -502,6 +506,7 @@ class PopupController {
 
       // Event Listeners
       const cb = card.querySelector(".card-checkbox");
+      cb.addEventListener("click", (e) => e.stopPropagation());
       cb.addEventListener("change", (e) => {
         if (e.target.checked) {
           this.selectedWaypointKeys.add(key);
@@ -510,6 +515,20 @@ class PopupController {
         }
         this.updateBatchBar(filteredWaypoints, waypoints.length);
       });
+
+      // Smooth pan to waypoint on clicking index circle or place name
+      const cardIndex = card.querySelector(".card-index");
+      const cardMain = card.querySelector(".card-main");
+      const onPanToLocation = (e) => {
+        e.stopPropagation();
+        this.handlePanToWaypoint(wp, card);
+      };
+
+      if (cardIndex) cardIndex.addEventListener("click", onPanToLocation);
+      if (cardMain) cardMain.addEventListener("click", onPanToLocation);
+
+      const cardActions = card.querySelector(".card-actions");
+      if (cardActions) cardActions.addEventListener("click", (e) => e.stopPropagation());
 
       const btnUp = card.querySelector(".btn-move-up");
       const btnDown = card.querySelector(".btn-move-down");
@@ -669,6 +688,33 @@ class PopupController {
       w.lockGroupId = null;
       this.saveState();
       this.render();
+    }
+  }
+
+  /**
+   * Smoothly pan Google Maps to waypoint without reloading page
+   */
+  handlePanToWaypoint(wp, card) {
+    if (!wp) return;
+
+    // Visual pulse feedback on card
+    if (card) {
+      document.querySelectorAll(".waypoint-card.card-panned").forEach(c => c.classList.remove("card-panned"));
+      card.classList.add("card-panned");
+      setTimeout(() => {
+        card.classList.remove("card-panned");
+      }, 1500);
+    }
+
+    if (chrome?.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({
+        action: "panToWaypoint",
+        waypoint: wp
+      }, (res) => {
+        if (chrome.runtime.lastError) {
+          console.warn("panToWaypoint error:", chrome.runtime.lastError.message);
+        }
+      });
     }
   }
 

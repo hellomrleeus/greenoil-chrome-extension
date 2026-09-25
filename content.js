@@ -50,6 +50,42 @@ if (window.__greenoil_injected__) {
             checkAndInject();
           }
         }
+
+        if (message.action === "didPanToWaypoint" && message.waypoint) {
+          showToast("平滑定位", `已定位到：${message.waypoint.name || "途径点"}`);
+          lastProcessedKey = "";
+          setTimeout(() => {
+            if (typeof checkAndInject === "function") {
+              checkAndInject();
+            }
+          }, 500);
+        }
+
+        if (message.action === "panToLocation" && message.waypoint) {
+          const wp = message.waypoint;
+          let p = message.targetPath;
+          if (!p && wp.mapsUrl) {
+            try {
+              const u = new URL(wp.mapsUrl);
+              p = u.pathname + u.search + u.hash;
+            } catch (_) {
+              p = wp.mapsUrl;
+            }
+          }
+          if (p) {
+            try {
+              history.pushState(null, "", p);
+              window.dispatchEvent(new PopStateEvent("popstate"));
+            } catch (_) {}
+          }
+          showToast("平滑定位", `已定位到：${wp.name || "途径点"}`);
+          lastProcessedKey = "";
+          setTimeout(() => {
+            if (typeof checkAndInject === "function") {
+              checkAndInject();
+            }
+          }, 500);
+        }
       });
     }
 

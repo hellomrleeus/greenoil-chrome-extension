@@ -182,6 +182,114 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
+/**
+ * Smoothly pan Google Maps to a waypoint location without page refresh
+ */
+async function handlePanToWaypoint(wp) {
+  if (!wp) return { success: false, error: "缺少地点数据" };
+
+  // 1. Find all Google Maps tabs
+  const mapTabs = await chrome.tabs.query({
+    url: [
+      "https://*.google.com/maps/*",
+      "https://*.google.ca/maps/*",
+      "https://*.google.co.uk/maps/*",
+      "https://*.google.com.hk/maps/*",
+      "https://*.google.com.tw/maps/*",
+      "https://*.google.co.jp/maps/*"
+    ]
+  });
+
+  // Find active tab in current window
+  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  let targetTab = null;
+
+  if (activeTabs.length > 0 && activeTabs[0].url && (activeTabs[0].url.includes("/maps") || activeTabs[0].url.includes("google."))) {
+    targetTab = activeTabs[0];
+  } else if (mapTabs.length > 0) {
+    targetTab = mapTabs[0];
+    await chrome.tabs.update(targetTab.id, { active: true });
+    if (targetTab.windowId) {
+      await chrome.windows.update(targetTab.windowId, { focused: true });
+    }
+  }
+
+  // Construct target URL path
+  let targetPath = "";
+  if (wp.mapsUrl && wp.mapsUrl.includes("/maps/")) {
+    try {
+      const u = new URL(wp.mapsUrl);
+      targetPath = u.pathname + u.search + u.hash;
+    } catch (_) {
+      targetPath = wp.mapsUrl;
+    }
+  }
+
+  if (!targetPath) {
+    const lat = parseFloat(wp.latitude);
+    const lng = parseFloat(wp.longitude);
+    const cleanName = (wp.name || "").trim();
+    if (!isNaN(lat) && !isNaN(lng)) {
+      targetPath = `/maps/place/${encodeURIComponent(cleanName)}/@${lat},${lng},17z`;
+    } else if (cleanName) {
+      targetPath = `/maps/search/${encodeURIComponent(cleanName)}`;
+    }
+  }
+
+  if (!targetTab) {
+    // If no existing Google Maps tab is open, open a new one
+    const fullUrl = targetPath.startsWith("http") ? targetPath : `https://www.google.com${targetPath}`;
+    await chrome.tabs.create({ url: fullUrl, active: true });
+    return { success: true, createdNewTab: true };
+  }
+
+  // 2. Perform smooth in-page navigation without reloading
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: targetTab.id },
+      world: "MAIN",
+      func: (urlPath, placeName) => {
+        try {
+          // Push state and dispatch popstate to trigger Google Maps native SPA flyTo / panTo
+          history.pushState(null, "", urlPath);
+          window.dispatchEvent(new PopStateEvent("popstate"));
+
+          // If search input exists, sync its value smoothly as well
+          const searchInput = document.querySelector('input[name="q"]');
+          if (searchInput && placeName) {
+            searchInput.value = placeName;
+          }
+          return { success: true };
+        } catch (e) {
+          return { success: false, error: e.message };
+        }
+      },
+      args: [targetPath, wp.name || ""]
+    });
+
+    // Notify content script to display toast and refresh button state
+    chrome.tabs.sendMessage(targetTab.id, {
+      action: "didPanToWaypoint",
+      waypoint: wp
+    }).catch(() => {});
+
+    return { success: true, panned: true };
+  } catch (err) {
+    console.error("ExecuteScript pan failed:", err);
+    // Fallback: send message to content script
+    try {
+      await chrome.tabs.sendMessage(targetTab.id, {
+        action: "panToLocation",
+        targetPath,
+        waypoint: wp
+      });
+      return { success: true, fallback: true };
+    } catch (e2) {
+      return { success: false, error: err.message };
+    }
+  }
+}
+
 // Runtime Message Dispatcher
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
@@ -395,6 +503,13 @@ function isPlaceMatch(w, q) {
         await chrome.storage.local.set({ gce_color_routes: routes });
         await updateBadge();
         sendResponse({ success: true });
+        return;
+      }
+
+      // 8. Smooth pan Google Maps to waypoint without reloading page
+      if (message.action === "panToWaypoint") {
+        const result = await handlePanToWaypoint(message.waypoint);
+        sendResponse(result);
         return;
       }
 

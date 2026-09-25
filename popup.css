@@ -529,6 +529,32 @@ html, body {
   font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+.card-index .index-pin {
+  display: none;
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+
+.card-index:hover {
+  transform: scale(1.12);
+  background-color: var(--theme-color);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+
+.card-index:hover .index-num {
+  display: none;
+}
+
+.card-index:hover .index-pin {
+  display: inline-block;
 }
 
 .card-locked .card-index {
@@ -536,9 +562,25 @@ html, body {
   color: #ffffff;
 }
 
+.card-locked .card-index:hover {
+  background-color: var(--theme-hover);
+}
+
 .card-main {
   flex: 1;
   min-width: 0;
+  cursor: pointer;
+}
+
+.card-main:hover .card-name {
+  color: var(--theme-color);
+  text-decoration: underline;
+}
+
+.waypoint-card.card-panned {
+  border-color: var(--theme-color) !important;
+  box-shadow: 0 0 0 2px var(--theme-light), 0 3px 8px rgba(0, 0, 0, 0.12) !important;
+  transform: translateY(-1px);
 }
 
 .card-header-row {
