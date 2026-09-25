@@ -12,6 +12,38 @@ if (window.__greenoil_injected__) {
   window.__greenoil_injected__ = true;
   (() => {
     let lastProcessedKey = "";
+    let currentTheme = null;
+
+    function applyTheme(theme) {
+      if (!theme) return;
+      currentTheme = theme;
+      document.documentElement.style.setProperty("--go-theme", theme.color || "#059669");
+      document.documentElement.style.setProperty("--go-hover", theme.hoverColor || "#047857");
+      document.documentElement.style.setProperty("--go-light", theme.lightColor || "#ecfdf5");
+      document.documentElement.style.setProperty("--go-border", theme.borderColor || "#10b981");
+    }
+
+    try {
+      if (chrome.runtime?.id) {
+        chrome.runtime.sendMessage({ action: "getActiveTheme" }, (resp) => {
+          if (resp && resp.theme) {
+            applyTheme(resp.theme);
+          }
+        });
+      }
+    } catch (_) {}
+
+    if (chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message.action === "themeColorChanged" && message.theme) {
+          applyTheme(message.theme);
+          lastProcessedKey = "";
+          if (typeof checkAndInject === "function") {
+            checkAndInject();
+          }
+        }
+      });
+    }
 
   const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
   const SVG_CHECK = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
@@ -336,6 +368,9 @@ if (window.__greenoil_injected__) {
             placeId: preliminaryData.placeId,
             name: preliminaryData.name
           }, (resp) => {
+            if (resp && resp.theme) {
+              applyTheme(resp.theme);
+            }
             if (resp && resp.inRoute) {
               circle.innerHTML = SVG_CHECK;
               label.textContent = "已添加";

@@ -1,5 +1,12 @@
 /* Green Oil Chrome Extension - Google Maps Injected Styles */
 
+:root {
+  --go-theme: #059669;
+  --go-hover: #047857;
+  --go-light: #ecfdf5;
+  --go-border: #10b981;
+}
+
 /* Action Item Container (Matches Google Maps circular action buttons) */
 .greenoil-action-container {
   display: block !important;
@@ -31,7 +38,7 @@
   transform: translateY(1px);
 }
 
-/* 40x40 Round Action Circle (Emerald Green) */
+/* 40x40 Round Action Circle */
 .greenoil-action-circle {
   display: inline-flex !important;
   align-items: center !important;
@@ -39,7 +46,7 @@
   width: 40px !important;
   height: 40px !important;
   border-radius: 50% !important;
-  background-color: #059669 !important;
+  background-color: var(--go-theme, #059669) !important;
   color: #ffffff !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.08) !important;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
@@ -47,8 +54,8 @@
 }
 
 .greenoil-action-btn:hover .greenoil-action-circle {
-  background-color: #047857 !important;
-  box-shadow: 0 3px 8px rgba(5, 150, 105, 0.3) !important;
+  background-color: var(--go-hover, #047857) !important;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25) !important;
 }
 
 .greenoil-action-circle svg {
@@ -60,14 +67,15 @@
 
 /* Added State */
 .greenoil-action-container.greenoil-added .greenoil-action-circle {
-  background-color: #ecfdf5 !important;
-  border: 1.5px solid #059669 !important;
-  color: #059669 !important;
+  background-color: var(--go-light, #ecfdf5) !important;
+  border: 1.5px solid var(--go-theme, #059669) !important;
+  color: var(--go-theme, #059669) !important;
   box-shadow: none !important;
 }
 
 .greenoil-action-container.greenoil-added:hover .greenoil-action-circle {
-  background-color: #d1fae5 !important;
+  background-color: var(--go-light, #d1fae5) !important;
+  filter: brightness(0.96);
 }
 
 /* Bottom Text Label Under the Circle */
@@ -75,7 +83,7 @@
   font-family: "Google Sans Text", "Google Sans", Roboto, "Noto Sans TC", -apple-system, sans-serif !important;
   font-size: 12px !important;
   font-weight: 500 !important;
-  color: #047857 !important;
+  color: var(--go-hover, #047857) !important;
   margin-top: 4px !important;
   text-align: center !important;
   line-height: 16px !important;
@@ -85,11 +93,11 @@
 }
 
 .greenoil-action-btn:hover .greenoil-action-label {
-  color: #065f46 !important;
+  color: var(--go-theme, #065f46) !important;
 }
 
 .greenoil-action-container.greenoil-added .greenoil-action-label {
-  color: #059669 !important;
+  color: var(--go-theme, #059669) !important;
   font-weight: 600 !important;
 }
 
