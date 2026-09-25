@@ -129,11 +129,45 @@ if (window.__greenoil_injected__) {
       if (!isNaN(rev)) reviews = rev;
     }
 
+    // 6. Opening Hours
+    let openingHours = "N/A";
+    const ohTable = mainPanel.querySelector("table.eK4R0e, table.WgFkxc, [data-item-id*='oh'] table, div[role='main'] table");
+    if (ohTable) {
+      const rows = Array.from(ohTable.querySelectorAll("tr")).map(tr => {
+        const cells = Array.from(tr.querySelectorAll("td, th")).map(c => c.textContent.trim());
+        if (cells.length >= 2) return `${cells[0]}: ${cells[1]}`;
+        return tr.textContent.trim();
+      }).filter(Boolean);
+      if (rows.length > 0) {
+        openingHours = rows.join("\n");
+      }
+    }
+
+    if (!openingHours || openingHours === "N/A") {
+      const ohBtn = mainPanel.querySelector("[data-item-id*='oh'], [aria-label*='營業時間'], [aria-label*='营业时间'], [aria-label*='Hours' i], [aria-label*='hours' i]");
+      if (ohBtn) {
+        const aria = ohBtn.getAttribute("aria-label") || "";
+        const text = ohBtn.innerText || ohBtn.textContent || "";
+        if (aria.includes(";") || (aria.includes(":") && (aria.includes("星期") || aria.includes("周") || aria.includes("Monday")))) {
+          openingHours = aria
+            .replace(/^(?:營業時間|营业时间|Hours)[:：]?\s*/i, "")
+            .replace(/;\s*/g, "\n")
+            .replace(/,\s*/g, ": ")
+            .replace(/ 到 /g, "–")
+            .replace(/ to /gi, "–");
+        } else {
+          openingHours = aria.replace(/·.*$/, "").replace(/查看更詳細.*$/, "").trim() ||
+                         text.replace(/查看更詳細.*$/, "").replace(/\n/g, " ").trim();
+        }
+      }
+    }
+
     return {
       id: placeId,
       placeId,
       name,
       address,
+      openingHours,
       latitude,
       longitude,
       rating,

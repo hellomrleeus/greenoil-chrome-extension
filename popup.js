@@ -4,6 +4,7 @@
  */
 
 import { GreenOilApi } from "./api.js";
+import { toEnglishAddress, toEnglishRestaurantName, formatOpeningHoursEnglish } from "./utils.js";
 
 const DEFAULT_ORIGIN = "Green Oil Inc. 4490 Chesswood Dr Unit 3, North York, ON M3J 2B9";
 
@@ -12,6 +13,7 @@ const SVG_UP = `<svg viewBox="0 0 24 24"><path d="M7.41 15.41L12 10.83l4.59 4.58
 const SVG_DOWN = `<svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>`;
 const SVG_LINK = `<svg viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>`;
 const SVG_STAR = `<svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>`;
+const SVG_CLOCK = `<svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>`;
 const SVG_EMPTY = `<svg class="empty-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
 
 class PopupController {
@@ -198,13 +200,22 @@ class PopupController {
       const card = document.createElement("div");
       card.className = "waypoint-card";
 
-      // Meta: rating and reviews
+      const displayName = toEnglishRestaurantName(wp.name, wp.nameEn);
+      const displayAddress = toEnglishAddress(wp.address);
+      const hoursEn = formatOpeningHoursEnglish(wp.openingHours);
+
+      let hoursHtml = "";
+      if (hoursEn && hoursEn !== "N/A") {
+        hoursHtml = `<span class="card-hours" title="${this.escapeHtml(hoursEn)}">${SVG_CLOCK} ${this.escapeHtml(hoursEn)}</span>`;
+      }
+
+      // Meta: rating, reviews, and hours
       let metaHtml = "";
-      if (wp.rating) {
+      if (wp.rating || hoursHtml) {
         metaHtml = `
           <div class="card-meta">
-            <span class="card-rating">${SVG_STAR} ${wp.rating}</span>
-            <span class="card-reviews">(${wp.reviews || 0} 评价)</span>
+            ${wp.rating ? `<span class="card-rating">${SVG_STAR} ${wp.rating}</span><span class="card-reviews">(${wp.reviews || 0} reviews)</span>` : ''}
+            ${hoursHtml}
           </div>
         `;
       }
@@ -212,8 +223,8 @@ class PopupController {
       card.innerHTML = `
         <div class="card-index">#${index + 1}</div>
         <div class="card-main">
-          <div class="card-name" title="${this.escapeHtml(wp.name)}">${this.escapeHtml(wp.name)}</div>
-          <div class="card-address" title="${this.escapeHtml(wp.address || '')}">${this.escapeHtml(wp.address || '地址未提供')}</div>
+          <div class="card-name" title="${this.escapeHtml(displayName)}">${this.escapeHtml(displayName)}</div>
+          <div class="card-address" title="${this.escapeHtml(displayAddress)}">${this.escapeHtml(displayAddress)}</div>
           ${metaHtml}
         </div>
         <div class="card-actions">
@@ -241,7 +252,7 @@ class PopupController {
       btnUp.addEventListener("click", () => this.moveWaypoint(index, index - 1));
       btnDown.addEventListener("click", () => this.moveWaypoint(index, index + 1));
       btnOpenMap.addEventListener("click", () => {
-        const url = wp.mapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((wp.name || "") + " " + (wp.address || ""))}`;
+        const url = wp.mapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(displayName + " " + displayAddress)}`;
         window.open(url, "_blank");
       });
       btnDelete.addEventListener("click", () => this.deleteWaypoint(index));
@@ -440,32 +451,20 @@ class PopupController {
       return;
     }
 
-    // Strictly English Headers and Content, explicitly omitting Phone Number per user requirement
+    // Strictly English Headers and Content: No., Restaurant Name, Address, Opening Hours
     const exportRows = waypoints.map((w, idx) => ({
-      "Stop #": idx + 1,
-      "Restaurant Name": w.name || "N/A",
-      "Address": w.address || "N/A",
-      "Rating": w.rating ? String(w.rating) : "N/A",
-      "Reviews": w.reviews || 0,
-      "Google Maps URL": w.mapsUrl || "",
-      "Latitude": w.latitude || "",
-      "Longitude": w.longitude || "",
-      "Added Time": w.addedAt ? w.addedAt.slice(0, 19).replace("T", " ") : "",
-      "Notes": w.notes || ""
+      "No.": idx + 1,
+      "Restaurant Name": toEnglishRestaurantName(w.name, w.nameEn),
+      "Address": toEnglishAddress(w.address),
+      "Opening Hours": formatOpeningHoursEnglish(w.openingHours)
     }));
 
     const ws = xlsxLib.utils.json_to_sheet(exportRows);
     ws["!cols"] = [
-      { wch: 8 },   // Stop #
-      { wch: 32 },  // Restaurant Name
-      { wch: 45 },  // Address
-      { wch: 10 },  // Rating
-      { wch: 10 },  // Reviews
-      { wch: 45 },  // Google Maps URL
-      { wch: 12 },  // Latitude
-      { wch: 12 },  // Longitude
-      { wch: 20 },  // Added Time
-      { wch: 20 }   // Notes
+      { wch: 8 },   // No.
+      { wch: 38 },  // Restaurant Name
+      { wch: 48 },  // Address
+      { wch: 38 }   // Opening Hours
     ];
 
     const wb = xlsxLib.utils.book_new();
