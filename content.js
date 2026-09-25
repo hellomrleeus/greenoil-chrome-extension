@@ -5,14 +5,35 @@
  */
 
 (() => {
-  let lastProcessedUrl = "";
+  let lastProcessedKey = "";
 
   const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
   const SVG_CHECK = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
   const SVG_INFO = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`;
 
+  /**
+   * Determine whether a place detail panel is currently open
+   */
   function isPlacePage() {
-    return location.href.includes("/place/");
+    if (location.href.includes("/place/")) return true;
+    const mainPanel = document.querySelector('div[role="main"]');
+    if (mainPanel) {
+      const heading = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
+      if (heading && heading.textContent && heading.textContent.trim().length > 0) {
+        return true;
+      }
+      const dirBtn = mainPanel.querySelector([
+        '[data-item-id="directions"]',
+        'button[data-value="Directions"]',
+        'button[data-value="路线"]',
+        'button[data-value="規劃路線"]',
+        'button[aria-label*="Directions"]',
+        'button[aria-label*="路线"]',
+        'button[aria-label*="路線"]'
+      ].join(', '));
+      if (dirBtn) return true;
+    }
+    return false;
   }
 
   /**
@@ -33,7 +54,7 @@
         name = decodeURIComponent(urlMatch[1].replace(/\+/g, " "));
       }
     }
-    if (!name) name = "Unknown Place";
+    if (!name) name = "Selected Location";
 
     // 2. Latitude & Longitude from URL
     let latitude = 43.76;
@@ -60,7 +81,7 @@
       if (textDiv && textDiv.textContent) {
         address = textDiv.textContent.trim();
       } else if (addrBtn.getAttribute("aria-label")) {
-        address = addrBtn.getAttribute("aria-label").replace(/^(Address:\s*|地址：\s*)/i, "").trim();
+        address = addrBtn.getAttribute("aria-label").replace(/^(Address:\s*|地址：\s*|地址:\s*)/i, "").trim();
       }
     }
     if (!address) {
@@ -68,6 +89,9 @@
       if (possibleAddress && possibleAddress.textContent) {
         address = possibleAddress.textContent.trim();
       }
+    }
+    if (!address) {
+      address = name;
     }
 
     // 4. Place ID / CID
@@ -165,50 +189,68 @@
   }
 
   /**
-   * Lightning-fast check: only touches DOM if on a place page and button is not present
+   * Check place status and inject [+ 途径点] button into the open place panel
    */
   function checkAndInject() {
     try {
       const currentUrl = location.href;
 
-      // 1. Not a place page: clean up old button if any and exit immediately
+      // 1. Not a place view: clean up old button and exit
       if (!isPlacePage()) {
-        if (lastProcessedUrl) {
-          lastProcessedUrl = "";
+        if (lastProcessedKey) {
+          lastProcessedKey = "";
           const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
           if (oldBtn) oldBtn.remove();
         }
         return;
       }
 
-      // 2. Same place and button is already in DOM: DO ABSOLUTELY NOTHING
-      const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
-      if (existingBtn && currentUrl === lastProcessedUrl && document.body && document.body.contains(existingBtn)) {
-        return;
-      }
-
-      // 3. Look for target container in main place panel
       const mainPanel = document.querySelector('div[role="main"]');
       if (!mainPanel) return;
 
-      const dirBtn = mainPanel.querySelector('button[data-value="Directions"], button[data-value="路线"], button[aria-label*="Directions"], button[aria-label*="路线"], [data-item-id="directions"]');
-      let targetContainer = dirBtn ? (dirBtn.closest('.m6QErb, .R6PtDb') || dirBtn.parentElement) : null;
+      const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
+      const placeName = h1 ? h1.textContent.trim() : "";
+      const currentKey = currentUrl + "|" + placeName;
 
-      if (!targetContainer) {
-        const actionRow = mainPanel.querySelector('.m6QErb[aria-label], .m6QErb');
-        if (actionRow) targetContainer = actionRow;
-        else {
-          const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
-          if (h1 && h1.parentElement) targetContainer = h1.parentElement;
+      // 2. Already injected and place hasn't changed
+      const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
+      if (existingBtn && document.body.contains(existingBtn) && currentKey === lastProcessedKey) {
+        return;
+      }
+
+      // 3. Find target container: Directions button row or main panel header
+      const dirBtn = mainPanel.querySelector([
+        '[data-item-id="directions"]',
+        'button[data-value="Directions"]',
+        'button[data-value="路线"]',
+        'button[data-value="路線"]',
+        'button[data-value="規劃路線"]',
+        'button[aria-label*="Directions" i]',
+        'button[aria-label*="路线"]',
+        'button[aria-label*="路線"]',
+        'button[aria-label*="规划"]',
+        'button[aria-label*="規劃"]',
+        'a[data-value="Directions"]',
+        'a[data-item-id="directions"]'
+      ].join(', '));
+
+      let targetContainer = null;
+      if (dirBtn && dirBtn.parentElement) {
+        targetContainer = dirBtn.parentElement;
+      } else {
+        const actionRow = mainPanel.querySelector('.m6QErb[aria-label], .m6QErb.Pf6ghf, .R6PtDb');
+        if (actionRow) {
+          targetContainer = actionRow;
+        } else if (h1 && h1.parentElement) {
+          targetContainer = h1.parentElement;
         }
       }
 
       if (!targetContainer) return;
 
-      // Remove stale button if place changed
+      // Clean up previous button if place changed
       if (existingBtn) existingBtn.remove();
-
-      lastProcessedUrl = currentUrl;
+      lastProcessedKey = currentKey;
 
       const btn = document.createElement("button");
       btn.id = "greenoil-add-waypoint-btn";
@@ -216,6 +258,23 @@
       btn.type = "button";
       btn.title = "加入当前地点到 Green Oil 路线";
       btn.innerHTML = `${SVG_PLUS}<span>+ 途径点</span>`;
+
+      // Check if place is already in the active route
+      try {
+        if (chrome.runtime?.id) {
+          const preliminaryData = extractPlaceData();
+          chrome.runtime.sendMessage({
+            action: "checkPlaceStatus",
+            placeId: preliminaryData.placeId,
+            name: preliminaryData.name
+          }, (resp) => {
+            if (resp && resp.inRoute) {
+              btn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
+              btn.classList.add("greenoil-added");
+            }
+          });
+        }
+      } catch (_) {}
 
       btn.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -271,8 +330,8 @@
     }
   }
 
-  // Pure lightweight polling loop every 1000ms
-  setInterval(checkAndInject, 1000);
+  // Lightweight check every 800ms
+  setInterval(checkAndInject, 800);
 
   // Initial check
   if (document.readyState === "complete" || document.readyState === "interactive") {
