@@ -168,102 +168,106 @@
    * Lightning-fast check: only touches DOM if on a place page and button is not present
    */
   function checkAndInject() {
-    const currentUrl = location.href;
+    try {
+      const currentUrl = location.href;
 
-    // 1. Not a place page: clean up old button if any and exit immediately
-    if (!isPlacePage()) {
-      if (lastProcessedUrl) {
-        lastProcessedUrl = "";
-        const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
-        if (oldBtn) oldBtn.remove();
-      }
-      return;
-    }
-
-    // 2. Same place and button is already in DOM: DO ABSOLUTELY NOTHING
-    const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
-    if (existingBtn && currentUrl === lastProcessedUrl && document.body.contains(existingBtn)) {
-      return;
-    }
-
-    // 3. Look for target container in main place panel
-    const mainPanel = document.querySelector('div[role="main"]');
-    if (!mainPanel) return;
-
-    const dirBtn = mainPanel.querySelector('button[data-value="Directions"], button[data-value="路线"], button[aria-label*="Directions"], button[aria-label*="路线"], [data-item-id="directions"]');
-    let targetContainer = dirBtn ? (dirBtn.closest('.m6QErb, .R6PtDb') || dirBtn.parentElement) : null;
-
-    if (!targetContainer) {
-      const actionRow = mainPanel.querySelector('.m6QErb[aria-label], .m6QErb');
-      if (actionRow) targetContainer = actionRow;
-      else {
-        const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
-        if (h1 && h1.parentElement) targetContainer = h1.parentElement;
-      }
-    }
-
-    if (!targetContainer) return;
-
-    // Remove stale button if place changed
-    if (existingBtn) existingBtn.remove();
-
-    lastProcessedUrl = currentUrl;
-
-    const btn = document.createElement("button");
-    btn.id = "greenoil-add-waypoint-btn";
-    btn.className = "greenoil-add-btn";
-    btn.type = "button";
-    btn.title = "加入当前地点到 Green Oil 路线";
-    btn.innerHTML = `${SVG_PLUS}<span>+ 途径点</span>`;
-
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-
-      btn.disabled = true;
-      const latestPlace = extractPlaceData();
-
-      try {
-        if (!chrome.runtime?.id) {
-          showToast("提示", "扩展已重新加载，请刷新网页", false);
-          btn.disabled = false;
-          return;
+      // 1. Not a place page: clean up old button if any and exit immediately
+      if (!isPlacePage()) {
+        if (lastProcessedUrl) {
+          lastProcessedUrl = "";
+          const oldBtn = document.getElementById("greenoil-add-waypoint-btn");
+          if (oldBtn) oldBtn.remove();
         }
+        return;
+      }
 
-        chrome.runtime.sendMessage({
-          action: "addWaypoint",
-          waypoint: latestPlace
-        }, (response) => {
-          if (chrome.runtime.lastError) {
-            showToast("通信异常", "无法连接后台服务，请刷新网页", false);
+      // 2. Same place and button is already in DOM: DO ABSOLUTELY NOTHING
+      const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
+      if (existingBtn && currentUrl === lastProcessedUrl && document.body && document.body.contains(existingBtn)) {
+        return;
+      }
+
+      // 3. Look for target container in main place panel
+      const mainPanel = document.querySelector('div[role="main"]');
+      if (!mainPanel) return;
+
+      const dirBtn = mainPanel.querySelector('button[data-value="Directions"], button[data-value="路线"], button[aria-label*="Directions"], button[aria-label*="路线"], [data-item-id="directions"]');
+      let targetContainer = dirBtn ? (dirBtn.closest('.m6QErb, .R6PtDb') || dirBtn.parentElement) : null;
+
+      if (!targetContainer) {
+        const actionRow = mainPanel.querySelector('.m6QErb[aria-label], .m6QErb');
+        if (actionRow) targetContainer = actionRow;
+        else {
+          const h1 = mainPanel.querySelector('h1.DUwDvf') || mainPanel.querySelector('h1');
+          if (h1 && h1.parentElement) targetContainer = h1.parentElement;
+        }
+      }
+
+      if (!targetContainer) return;
+
+      // Remove stale button if place changed
+      if (existingBtn) existingBtn.remove();
+
+      lastProcessedUrl = currentUrl;
+
+      const btn = document.createElement("button");
+      btn.id = "greenoil-add-waypoint-btn";
+      btn.className = "greenoil-add-btn";
+      btn.type = "button";
+      btn.title = "加入当前地点到 Green Oil 路线";
+      btn.innerHTML = `${SVG_PLUS}<span>+ 途径点</span>`;
+
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+
+        btn.disabled = true;
+        const latestPlace = extractPlaceData();
+
+        try {
+          if (!chrome.runtime?.id) {
+            showToast("提示", "扩展已重新加载，请刷新网页", false);
             btn.disabled = false;
             return;
           }
 
-          if (response && response.success) {
-            btn.innerHTML = `${SVG_CHECK}<span>已添加</span>`;
-            btn.classList.add("greenoil-added");
-            showToast("已加入路线", `${latestPlace.name} (当前路线共 ${response.count} 个途径点)`);
-          } else if (response && response.alreadyExists) {
-            btn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
-            btn.classList.add("greenoil-added");
-            showToast("提示", `${latestPlace.name} 已存在于当前路线中`, false);
-          } else {
-            showToast("添加失败", response?.error || "请稍后重试", false);
-            btn.disabled = false;
-          }
-        });
-      } catch (err) {
-        console.error("Failed to add waypoint:", err);
-        showToast("通信异常", "扩展连接失败", false);
-        btn.disabled = false;
-      }
-    });
+          chrome.runtime.sendMessage({
+            action: "addWaypoint",
+            waypoint: latestPlace
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              showToast("通信异常", "无法连接后台服务，请刷新网页", false);
+              btn.disabled = false;
+              return;
+            }
 
-    if (dirBtn && dirBtn.nextSibling) {
-      targetContainer.insertBefore(btn, dirBtn.nextSibling);
-    } else {
-      targetContainer.appendChild(btn);
+            if (response && response.success) {
+              btn.innerHTML = `${SVG_CHECK}<span>已添加</span>`;
+              btn.classList.add("greenoil-added");
+              showToast("已加入路线", `${latestPlace.name} (当前路线共 ${response.count} 个途径点)`);
+            } else if (response && response.alreadyExists) {
+              btn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
+              btn.classList.add("greenoil-added");
+              showToast("提示", `${latestPlace.name} 已存在于当前路线中`, false);
+            } else {
+              showToast("添加失败", response?.error || "请稍后重试", false);
+              btn.disabled = false;
+            }
+          });
+        } catch (err) {
+          console.error("Failed to add waypoint:", err);
+          showToast("通信异常", "扩展连接失败", false);
+          btn.disabled = false;
+        }
+      });
+
+      if (dirBtn && dirBtn.nextSibling) {
+        targetContainer.insertBefore(btn, dirBtn.nextSibling);
+      } else {
+        targetContainer.appendChild(btn);
+      }
+    } catch (err) {
+      console.warn("[GreenOil] Injection check caught error:", err);
     }
   }
 
