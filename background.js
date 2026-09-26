@@ -395,6 +395,13 @@ async function cachePositive(key, placeId, value, max) {
   await chrome.storage.local.set({ [key]: pruneCache(map, max, now) });
 }
 
+async function removeCacheEntry(key, placeId) {
+  const map = await readCache(key);
+  if (!Object.prototype.hasOwnProperty.call(map, placeId)) return;
+  delete map[placeId];
+  await chrome.storage.local.set({ [key]: map });
+}
+
 /**
  * Check if the user is authenticated in the MIS system
  */
@@ -544,14 +551,46 @@ function unitOf(address) {
   return m ? m[1].toLowerCase() : "";
 }
 
-/** The MIS customer that is this Google place, or null. */
-function pickMisRecordForPlace(records, place, kind) {
-  let pool = (records || []).filter(r => r && r.code);
+const MIS_CANDIDATE_MAX = 255;
+
+/**
+ * All plausible MIS rows for this Google place, deduplicated by customer
+ * code and ranked so the strongest local signals appear first. JEV makes
+ * the final decision; these rules only keep unrelated addresses out.
+ */
+function misCandidatesForPlace(records, place, kind) {
+  const input = Array.isArray(records) ? records : records ? [records] : [];
+  let pool = input.filter(r => r && r.code);
   if (kind === "name") pool = filterNameHits(pool, place);
   if (kind === "address") {
     const number = houseNumberOf(place.streetPrefix || place.displayName);
     pool = pool.filter(r => houseNumberOf(r.address) === number);
   }
+
+  const byCode = new Map();
+  for (const record of pool) {
+    const key = String(record.code).trim().toUpperCase();
+    if (!key) continue;
+    const previous = byCode.get(key);
+    if (!previous || (previous.sts !== "A" && record.sts === "A")) byCode.set(key, record);
+  }
+
+  const placeUnit = unitOf(place.displayName);
+  return [...byCode.values()]
+    .map(r => ({
+      r,
+      unit: Boolean(placeUnit) && unitOf(r.address) === placeUnit,
+      name: Math.max(nameScore(r.name, place.englishName), nameScore(r.name, place.name))
+    }))
+    .sort((a, b) => (b.unit - a.unit) || (b.name - a.name) ||
+      ((b.r.sts === "A") - (a.r.sts === "A")))
+    .slice(0, MIS_CANDIDATE_MAX)
+    .map(x => x.r);
+}
+
+/** The MIS customer that is this Google place, or null. */
+function pickMisRecordForPlace(records, place, kind) {
+  const pool = misCandidatesForPlace(records, place, kind);
   if (!pool.length) return null;
   const placeUnit = unitOf(place.displayName);
   const scored = pool.map(r => ({
@@ -673,7 +712,11 @@ async function misRecordsFor(query, phpsessid) {
   return records;
 }
 
-/** {customer} when the place is an MIS customer, {customer: null} otherwise. */
+/**
+ * Find an MIS candidate for this Google place. A fresh MIS candidate is not
+ * persisted until JEV confirms that it is still the business currently shown
+ * by Google Maps (the address may now have a different restaurant tenant).
+ */
 async function handleExploreMatchMis(message) {
   const place = sanitizeExplorePlace(message.place);
   if (!place) return { success: false, error: "bad place" };
@@ -682,7 +725,15 @@ async function handleExploreMatchMis(message) {
 
   if (!message.forceRefresh) {
     const hit = freshEntry((await readCache(MIS_CACHE_KEY))[place.placeId], Date.now());
-    if (hit) return { success: true, customer: hit.customer, cached: true };
+    if (hit?.jevVerified === true) {
+      return { success: true, customer: hit.customer, cached: true, verified: true,
+        probability: hit.jevProbability ?? null };
+    }
+    // Entries created by an older extension version still need the new JEV
+    // tenant check before they can be trusted or shown again.
+    if (hit?.customer) {
+      return { success: true, candidate: hit.customer, cached: true, needsValidation: true };
+    }
   }
   const query = misQueryFor(place);
   if (!query) return { success: true, customer: null, diag: { reason: "无地址门牌号也无英文店名" } };
@@ -690,17 +741,18 @@ async function handleExploreMatchMis(message) {
   return enqueueMis(async () => {
     if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
     const phpsessid = (await chrome.cookies.get({ url: "https://mis.greenoilinc.com", name: "PHPSESSID" }))?.value || "";
-    const records = await misRecordsFor(query, phpsessid);
+    const result = await misRecordsFor(query, phpsessid);
+    const records = Array.isArray(result) ? result : result ? [result] : result;
     const diag = { kind: query.kind, keyword: query.keyword, records: records ? records.length : null };
     if (!records) return { success: false, error: "MIS 查询失败", diag: { ...diag, reason: "请求失败或被判定为登录页" } };
-    const rec = pickMisRecordForPlace(records, place, query.kind);
-    if (!rec) {
+    const candidates = misCandidatesForPlace(records, place, query.kind);
+    if (!candidates.length) {
       const reason = records.length
         ? `MIS 有 ${records.length} 条记录但对应不上这家店（${records.slice(0, 3).map(r => `${r.name} / ${r.address}`).join("；")}）`
         : "MIS 无记录";
       return { success: true, customer: null, diag: { ...diag, reason } };
     }
-    const customer = {
+    const customers = candidates.map(rec => ({
       ...rec,
       latitude: place.latitude,
       longitude: place.longitude,
@@ -708,12 +760,17 @@ async function handleExploreMatchMis(message) {
       matchedBy: query.kind,
       matchedPrefix: query.keyword,
       matchedCandidateName: place.name
+    }));
+    const reason = customers.length === 1
+      ? `MIS 候选 ${customers[0].name} (${customers[0].code})，等待 JEV 是否校验`
+      : `MIS 返回 ${customers.length} 个候选，等待 JEV 单选校验`;
+    return {
+      success: true,
+      candidate: customers.length === 1 ? customers[0] : undefined,
+      candidates: customers,
+      needsValidation: true,
+      diag: { ...diag, candidates: customers.length, reason }
     };
-    // Persist only while still logged in (a logout mid-scan wipes the cache).
-    if ((await checkMisAuth(true)).loggedIn) {
-      await cachePositive(MIS_CACHE_KEY, place.placeId, { customer }, MIS_CACHE_MAX);
-    }
-    return { success: true, customer, diag: { ...diag, reason: `匹配 ${rec.name} (${rec.code})` } };
   });
 }
 
@@ -729,6 +786,9 @@ const JEV_API = {
   model: "jev-latest"
 };
 const FRIED_THRESHOLD = 0.5;
+const MIS_MATCH_THRESHOLD = 0.65;
+const MIS_CHOICE_CONFIDENCE_THRESHOLD = 0.65;
+const MIS_CHOICE_MARGIN = 0.15;
 let _jevKey = null;
 let _jevChain = Promise.resolve();
 
@@ -783,15 +843,118 @@ function friedRequest(place) {
   };
 }
 
-/** Probability of "yes" from a System One reply, or null. */
-function friedProbability(data) {
-  const a = data && data.answers && data.answers.fried;
+/** Ask JEV whether the MIS row is the current tenant shown by Google Maps. */
+function misMatchRequest(place, customer) {
+  return {
+    model: JEV_API.model,
+    state: {
+      google_place: {
+        name: place.name,
+        english_name: place.englishName,
+        address: place.displayName,
+        categories: place.categories,
+        description: place.description,
+        owner_description: place.ownerDescription,
+        review_snippets: place.reviews
+      },
+      mis_customer: {
+        name: customer.name,
+        address: customer.address,
+        city: customer.city,
+        status: customer.sts
+      }
+    },
+    questions: {
+      same_business: {
+        type: "noul",
+        instructions:
+          "Is the MIS customer record the same restaurant business that is currently shown in the Google Maps place? " +
+          "A matching street address alone is not sufficient because the restaurant tenant may have changed. " +
+          "Use the business names, unit/address, cuisine/categories, descriptions and recent review snippets. " +
+          "Return false when the MIS record is likely a previous tenant or a different business at the same address.",
+        criteria: {
+          true: "The evidence indicates the MIS customer and current Google Maps restaurant are the same operating business.",
+          false: "The evidence indicates a different/currently replaced restaurant, or is too conflicting to identify them as the same business."
+        }
+      }
+    }
+  };
+}
+
+/** Ask JEV to choose one MIS row, or explicitly choose none of them. */
+function misChoiceRequest(place, customers) {
+  const keyed = customers.map((customer, index) => ({
+    key: `candidate_${index + 1}`,
+    customer
+  }));
+  const criteria = Object.fromEntries(keyed.map(({ key, customer }) => [key,
+    `This is the current Google Maps restaurant: MIS code ${customer.code}, name ${customer.name}, ` +
+    `address ${customer.address}${customer.city ? `, ${customer.city}` : ""}, status ${customer.sts || "unknown"}.`
+  ]));
+  criteria.none_of_above =
+    "None of the MIS records is the restaurant currently shown by Google Maps; they may be previous tenants or different units/businesses.";
+
+  return {
+    body: {
+      model: JEV_API.model,
+      state: {
+        google_place: {
+          name: place.name,
+          english_name: place.englishName,
+          address: place.displayName,
+          categories: place.categories,
+          description: place.description,
+          owner_description: place.ownerDescription,
+          review_snippets: place.reviews
+        },
+        mis_candidates: keyed.map(({ key, customer }) => ({
+          key, code: customer.code, name: customer.name, address: customer.address,
+          city: customer.city, status: customer.sts
+        }))
+      },
+      questions: {
+        same_business: {
+          type: "choice",
+          instructions:
+            "Choose the one MIS customer record that represents the restaurant currently shown by Google Maps. " +
+            "A matching street address alone is not sufficient because restaurant tenants and units may differ or change. " +
+            "Use the business name, unit/address, cuisine/categories, descriptions and recent review snippets. " +
+            "Choose none_of_above when no candidate is clearly the same current business.",
+          criteria
+        }
+      }
+    },
+    keyed
+  };
+}
+
+function answerProbability(data, key) {
+  const a = data && data.answers && data.answers[key];
   if (!a) return null;
   for (const v of [a.noul, a.probability, a.value]) {
     if (typeof v === "number" && v >= 0 && v <= 1) return v;
     if (typeof v === "boolean") return v ? 1 : 0;
   }
   return null;
+}
+
+function choiceAnswer(data, key) {
+  const answer = data && data.answers && data.answers[key];
+  if (!answer || typeof answer.choice !== "string" ||
+    !answer.probabilities || typeof answer.probabilities !== "object") return null;
+  const confidence = Number(answer.confidence);
+  const probabilities = Object.fromEntries(Object.entries(answer.probabilities)
+    .filter(([, value]) => typeof value === "number" && value >= 0 && value <= 1));
+  return {
+    choice: answer.choice,
+    confidence: Number.isFinite(confidence) ? confidence : 0,
+    probabilities
+  };
+}
+
+/** Probability of "yes" from a System One reply, or null. */
+function friedProbability(data) {
+  return answerProbability(data, "fried");
 }
 
 async function callJev(body) {
@@ -845,6 +1008,96 @@ async function handleExploreClassifyFried(message) {
   return run;
 }
 
+function sanitizeMisCandidate(c) {
+  if (!c || typeof c.code !== "string" || typeof c.name !== "string") return null;
+  const str = (v, max = 200) => (typeof v === "string" ? v.slice(0, max) : "");
+  return {
+    no: str(c.no, 40), name: str(c.name), code: str(c.code, 80),
+    address: str(c.address, 300), city: str(c.city, 120), payment: str(c.payment, 80),
+    rate: str(c.rate, 80), container: str(c.container, 200), containerRaw: str(c.containerRaw, 1000),
+    driver: str(c.driver, 120), phone: str(c.phone, 80), sts: str(c.sts, 20),
+    contract: str(c.contract, 120), inactive: str(c.inactive, 120),
+    matchedBy: str(c.matchedBy, 20), matchedPrefix: str(c.matchedPrefix),
+    matchedCandidateName: str(c.matchedCandidateName), placeId: str(c.placeId, 80),
+    latitude: Number.isFinite(c.latitude) ? c.latitude : null,
+    longitude: Number.isFinite(c.longitude) ? c.longitude : null
+  };
+}
+
+/** JEV tenant check: one candidate uses noul; multiple use a single choice. */
+async function handleExploreValidateMis(message) {
+  const place = sanitizeExplorePlace(message.place);
+  const rawCandidates = Array.isArray(message.customers) ? message.customers :
+    message.customer ? [message.customer] : [];
+  const byCode = new Map();
+  for (const raw of rawCandidates) {
+    const candidate = sanitizeMisCandidate(raw);
+    if (!candidate || candidate.placeId !== place?.placeId) continue;
+    const key = candidate.code.trim().toUpperCase();
+    if (key && !byCode.has(key)) byCode.set(key, candidate);
+  }
+  const customers = [...byCode.values()].slice(0, MIS_CANDIDATE_MAX);
+  if (!place || !customers.length) {
+    return { success: false, error: "bad MIS validation input" };
+  }
+  if (!(await checkMisAuth(true)).loggedIn) return { success: false, notLoggedIn: true };
+
+  const run = _jevChain.then(async () => {
+    if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
+    try {
+      let customer = null;
+      let probability = null;
+      let confidence = null;
+      let margin = null;
+      let ambiguous = false;
+      let mode = "noul";
+      let selection = null;
+
+      if (customers.length === 1) {
+        probability = answerProbability(await callJev(misMatchRequest(place, customers[0])), "same_business");
+        if (probability === null) return { success: false, error: "JEV 是否判断返回格式无法识别" };
+        if (probability >= MIS_MATCH_THRESHOLD) customer = customers[0];
+      } else {
+        mode = "choice";
+        const { body, keyed } = misChoiceRequest(place, customers);
+        const answer = choiceAnswer(await callJev(body), "same_business");
+        if (!answer) return { success: false, error: "JEV 单选判断返回格式无法识别" };
+        selection = answer.choice;
+        confidence = answer.confidence;
+        probability = answer.probabilities[answer.choice] ?? 0;
+        const alternatives = Object.entries(answer.probabilities)
+          .filter(([key]) => key !== answer.choice)
+          .map(([, value]) => value)
+          .sort((a, b) => b - a);
+        margin = probability - (alternatives[0] ?? 0);
+        const selected = keyed.find(x => x.key === answer.choice)?.customer || null;
+        const certain = probability >= MIS_MATCH_THRESHOLD &&
+          confidence >= MIS_CHOICE_CONFIDENCE_THRESHOLD && margin >= MIS_CHOICE_MARGIN;
+        if (selected && certain) customer = selected;
+        ambiguous = Boolean(selected) && !certain;
+      }
+
+      const matches = Boolean(customer);
+      if (matches && (await checkMisAuth(true)).loggedIn) {
+        await cachePositive(MIS_CACHE_KEY, place.placeId, {
+          customer, jevVerified: true, jevProbability: probability,
+          jevConfidence: confidence, jevMode: mode
+        }, MIS_CACHE_MAX);
+      } else if (!matches) {
+        await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
+      }
+      return {
+        success: true, matches, probability, confidence, margin, ambiguous, mode, selection,
+        customer: matches ? customer : null
+      };
+    } catch (err) {
+      return { success: false, disabled: Boolean(err.disabled), error: err.message };
+    }
+  });
+  _jevChain = run.catch(() => {});
+  return run;
+}
+
 /**
  * Tags for a place page (name badge): cached MIS match (login-gated) and
  * cached fried verdict. Same data as the 探索 pins, keyed by place id.
@@ -856,7 +1109,8 @@ async function handleGetPlaceTags(message) {
   const fried = freshEntry((await readCache(FRIED_CACHE_KEY))[placeId], now);
   let customer = null;
   if ((await checkMisAuth(true)).loggedIn) {
-    customer = freshEntry((await readCache(MIS_CACHE_KEY))[placeId], now)?.customer || null;
+    const hit = freshEntry((await readCache(MIS_CACHE_KEY))[placeId], now);
+    customer = hit?.jevVerified === true ? hit.customer : null;
   }
   return { success: true, customer, fried: Boolean(fried), probability: fried?.probability ?? null };
 }
@@ -876,7 +1130,8 @@ async function handleGetMatchedPlaces() {
   }
   if ((await checkMisAuth(true)).loggedIn) {
     for (const [placeId, e] of Object.entries(await readCache(MIS_CACHE_KEY))) {
-      const c = freshEntry(e, now)?.customer;
+      const fresh = freshEntry(e, now);
+      const c = fresh?.jevVerified === true ? fresh.customer : null;
       if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) continue;
       const prev = byId.get(placeId);
       byId.set(placeId, { placeId, name: c.matchedCandidateName || c.name, latitude: c.latitude, longitude: c.longitude,
@@ -1140,6 +1395,10 @@ function isPlaceMatch(w, q) {
       // 10. 探索: per-place MIS match / fried-food judgement / cancel
       if (message.action === "exploreMatchMis") {
         sendResponse(await handleExploreMatchMis(message));
+        return;
+      }
+      if (message.action === "exploreValidateMis") {
+        sendResponse(await handleExploreValidateMis(message));
         return;
       }
       if (message.action === "exploreClassifyFried") {

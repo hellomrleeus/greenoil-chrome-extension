@@ -255,6 +255,17 @@ test('the MIS customer is tied to THIS place (unit, name, single tenant)', () =>
   assert.equal(m.pickMisRecordForPlace(chain, { name: 'Subway', englishName: 'Subway', street: 'Finch Ave E', displayName: '' }, 'name').code, 'Y');
 });
 
+test('MIS candidate collection accepts one/object or arrays and deduplicates customer codes', () => {
+  const m = loadMatching();
+  const place = { name: 'New Restaurant', englishName: 'New Restaurant', streetPrefix: '10 Main St', displayName: '10 Main St' };
+  const one = { code: 'A', name: 'OLD TENANT', address: '10 Main Street', sts: 'I' };
+  assert.deepEqual(plain(m.misCandidatesForPlace(one, place, 'address')).map(x => x.code), ['A']);
+  const many = [one, { ...one, name: 'ACTIVE DUPLICATE', sts: 'A' }, { code: 'B', name: 'OTHER', address: '10 Main St', sts: 'A' }];
+  const out = plain(m.misCandidatesForPlace(many, place, 'address'));
+  assert.deepEqual(out.map(x => x.code).sort(), ['A', 'B']);
+  assert.equal(out.find(x => x.code === 'A').name, 'ACTIVE DUPLICATE');
+});
+
 test('name / unit helpers', () => {
   const m = loadMatching();
   assert.equal(m.nameScore('Seafood Princess Inc', 'Seafood Princess'), 1);
@@ -278,10 +289,11 @@ test('login-page detection: a customer list with a password field is NOT the log
 test('MIS results carry a diagnosis for the page console', async () => {
   const h = loadHandlers({ misHtml: `<table>${misRow('GO9', 'GOLDEN WOK', '3601 Victoria Park Ave Unit 5')}</table>` });
   const r = await h.run('handleExploreMatchMis', { sessionId: 's', place: { ...PLACE, displayName: '3601 Victoria Park Ave, Scarborough' } });
-  assert.equal(r.customer, null);
+  assert.equal(r.candidate.code, 'GO9');
   assert.equal(r.diag.keyword, '3601 Victoria Park');
   assert.equal(r.diag.records, 1);
-  assert.match(r.diag.reason, /对应不上.*GOLDEN WOK/);
+  assert.equal(r.diag.candidates, 1);
+  assert.match(r.diag.reason, /等待 JEV 是否校验/);
 });
 
 test('page-provided places are sanitized', () => {
@@ -318,7 +330,9 @@ function loadHandlers({ loggedIn = true, misHtml, misUrl = 'https://mis.greenoil
       if (url.includes('api.typesafe.ai')) {
         const body = JSON.parse(opts.body);
         calls.jev.push({ url, auth: opts.headers.Authorization, body });
-        return { ok: true, status: 200, json: async () => jevReply(body) };
+        return { ok: true, status: 200, json: async () => jevReply
+          ? jevReply(body)
+          : { answers: { same_business: { noul: 0.92 }, fried: { noul: 0.12 } } } };
       }
       calls.mis.push(url);
       state.misInFlight++;
@@ -355,16 +369,25 @@ const misRow = (code, name, address) =>
 
 const PLACE = { placeId: '0xa:0xa', name: 'Seafood Princess', englishName: 'Seafood Princess', streetPrefix: '3601 Victoria Park Ave', street: 'Victoria Park Ave', displayName: '3601 Victoria Park Ave, Scarborough', latitude: 43.8, longitude: -79.3 };
 
-test('MIS match: queried once, cached only when matched, served from cache next time', async () => {
+test('MIS match: candidate is cached only after JEV confirms the current business', async () => {
   const h = loadHandlers({ misHtml: `<table>${misRow('GO1', 'SEAFOOD PRINCESS', '3601 Victoria Park Ave')}</table>` });
   const r1 = await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
-  assert.equal(r1.customer.code, 'GO1');
-  assert.equal(r1.customer.placeId, '0xa:0xa');
+  assert.equal(r1.candidate.code, 'GO1');
+  assert.equal(r1.candidate.placeId, '0xa:0xa');
   assert.equal(h.calls.mis.length, 1);
+  assert.equal(h.store.gce_mis_match_cache, undefined, 'raw MIS result is not trusted or cached');
+
+  const checked = await h.run('handleExploreValidateMis', {
+    sessionId: 's', place: { ...PLACE, categories: ['Seafood restaurant'], reviews: ['Still open'] }, customer: r1.candidate
+  });
+  assert.deepEqual([checked.matches, checked.customer.code, checked.probability], [true, 'GO1', 0.92]);
   assert.ok(h.store.gce_mis_match_cache['0xa:0xa']);
+  assert.equal(h.store.gce_mis_match_cache['0xa:0xa'].jevVerified, true);
 
   const r2 = await h.run('handleExploreMatchMis', { sessionId: 's2', place: PLACE });
   assert.equal(r2.cached, true);
+  assert.equal(r2.verified, true);
+  assert.equal(r2.customer.code, 'GO1');
   assert.equal(h.calls.mis.length, 1, 'no MIS request for a cached match');
 
   // no match -> nothing stored, asked again next time
@@ -374,6 +397,69 @@ test('MIS match: queried once, cached only when matched, served from cache next 
   assert.equal(h.store.gce_mis_match_cache['0xb:0xb'], undefined);
   await h.run('handleExploreMatchMis', { sessionId: 's3', place: { ...other } });
   assert.equal(h.calls.mis.length, 2, 'memoized keyword within 10 min, but never persisted');
+});
+
+test('MIS JEV check rejects a previous tenant at the same address', async () => {
+  const h = loadHandlers({
+    misHtml: `<table>${misRow('OLD1', 'OLD GOLDEN WOK', '3601 Victoria Park Ave')}</table>`,
+    jevReply: (body) => {
+      assert.equal(body.state.google_place.name, 'Seafood Princess');
+      assert.equal(body.state.mis_customer.name, 'OLD GOLDEN WOK');
+      assert.match(body.questions.same_business.instructions, /address alone is not sufficient/i);
+      return { answers: { same_business: { noul: 0.08 } } };
+    },
+  });
+  const found = await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  const checked = await h.run('handleExploreValidateMis', {
+    sessionId: 's', place: { ...PLACE, categories: ['Seafood restaurant'], reviews: ['new restaurant'] }, customer: found.candidate
+  });
+  assert.deepEqual([checked.matches, checked.customer, checked.probability], [false, null, 0.08]);
+  assert.equal(h.store.gce_mis_match_cache, undefined, 'rejected tenant is never cached');
+});
+
+test('multiple MIS rows use one JEV choice request and cache the selected customer', async () => {
+  const h = loadHandlers({
+    misHtml: `<table>${misRow('OLD1', 'OLD TENANT', '3601 Victoria Park Ave')}${misRow('GO2', 'SEAFOOD PRINCESS', '3601 Victoria Park Ave')}</table>`,
+    jevReply: (body) => {
+      assert.equal(body.questions.same_business.type, 'choice');
+      assert.deepEqual(body.state.mis_candidates.map(x => x.key), ['candidate_1', 'candidate_2']);
+      assert.ok(body.questions.same_business.criteria.none_of_above);
+      return { answers: { same_business: {
+        type: 'choice', choice: 'candidate_1', confidence: 0.91,
+        probabilities: { candidate_1: 0.82, candidate_2: 0.11, none_of_above: 0.07 },
+      } } };
+    },
+  });
+  const found = await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  assert.equal(found.candidate, undefined);
+  assert.equal(found.candidates.length, 2);
+  const expectedCode = found.candidates[0].code;
+  const checked = await h.run('handleExploreValidateMis', {
+    sessionId: 's', place: PLACE, customers: found.candidates
+  });
+  assert.deepEqual([checked.matches, checked.mode, checked.customer.code, checked.probability],
+    [true, 'choice', expectedCode, 0.82]);
+  assert.equal(h.store.gce_mis_match_cache['0xa:0xa'].customer.code, expectedCode);
+  assert.equal(h.calls.jev.length, 1);
+});
+
+test('multiple-choice MIS validation rejects none-of-above and ambiguous winners', async () => {
+  let reply = 'none';
+  const h = loadHandlers({ jevReply: () => ({ answers: { same_business: reply === 'none'
+    ? { type: 'choice', choice: 'none_of_above', confidence: 0.93,
+      probabilities: { candidate_1: 0.05, candidate_2: 0.05, none_of_above: 0.9 } }
+    : { type: 'choice', choice: 'candidate_1', confidence: 0.9,
+      probabilities: { candidate_1: 0.55, candidate_2: 0.4, none_of_above: 0.05 } } } }) });
+  const customers = [
+    { ...PLACE, code: 'A', name: 'A', address: PLACE.displayName },
+    { ...PLACE, code: 'B', name: 'B', address: PLACE.displayName },
+  ];
+  const none = await h.run('handleExploreValidateMis', { sessionId: 's1', place: PLACE, customers });
+  assert.deepEqual([none.matches, none.selection, none.ambiguous], [false, 'none_of_above', false]);
+  reply = 'ambiguous';
+  const ambiguous = await h.run('handleExploreValidateMis', { sessionId: 's2', place: PLACE, customers });
+  assert.deepEqual([ambiguous.matches, ambiguous.selection, ambiguous.ambiguous], [false, 'candidate_1', true]);
+  assert.ok(Math.abs(ambiguous.margin - 0.15) < 1e-9);
 });
 
 test('MIS queue runs one request at a time; cancelled sessions are skipped', async () => {
@@ -463,7 +549,8 @@ test('jev reply parsing', () => {
 
 test('place tags: cached MIS match (login-gated) and cached fried verdict by place id', async () => {
   const h = loadHandlers({ misHtml: `<table>${misRow('GO1', 'SEAFOOD PRINCESS', '3601 Victoria Park Ave')}</table>` });
-  await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  const found = await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  await h.run('handleExploreValidateMis', { sessionId: 's', place: PLACE, customer: found.candidate });
   h.store.gce_fried_cache = { '0xa:0xa': { t: Date.now(), probability: 0.8 }, '0xf:0xf': { t: Date.now(), probability: 0.93 } };
   const a = await h.run('handleGetPlaceTags', { placeId: '0xa:0xa' });
   assert.deepEqual([a.customer.code, a.fried, a.probability], ['GO1', true, 0.8]);
@@ -479,9 +566,12 @@ test('place tags: cached MIS match (login-gated) and cached fried verdict by pla
 test('resident pins: every cached match with coordinates; MIS only while logged in', async () => {
   const h = loadHandlers({
     misHtml: `<table>${misRow('GO1', 'SEAFOOD PRINCESS', '3601 Victoria Park Ave')}</table>`,
-    jevReply: () => ({ answers: { fried: { noul: 0.9 } } }),
+    jevReply: (body) => ({ answers: body.questions.same_business
+      ? { same_business: { noul: 0.94 } }
+      : { fried: { noul: 0.9 } } }),
   });
-  await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  const found = await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  await h.run('handleExploreValidateMis', { sessionId: 's', place: PLACE, customer: found.candidate });
   const friedPlace = { ...PLACE, placeId: '0xf:0xf', name: 'Wings Hut', latitude: 43.81, longitude: -79.31 };
   await h.run('handleExploreClassifyFried', { sessionId: 's', place: friedPlace });
   assert.deepEqual(plain(h.store.gce_fried_cache['0xf:0xf']).name, 'Wings Hut', 'fried cache keeps name + coordinates');
@@ -514,28 +604,34 @@ test('no third-party map data; explore handlers wired', () => {
     assert.ok(!JSON.stringify(manifest).toLowerCase().includes(s), `manifest mentions ${s}`);
   }
   assert.deepEqual(manifest.content_scripts.find((c) => c.js.includes('content.js')).js, ['google-places.js', 'content.js']);
-  for (const a of ['exploreMatchMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags', 'getMatchedPlaces']) assert.ok(source.includes(`"${a}"`), a);
+  for (const a of ['exploreMatchMis', 'exploreValidateMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags', 'getMatchedPlaces']) assert.ok(source.includes(`"${a}"`), a);
   assert.ok(!source.includes('scanAndMatchMis'), 'old nearest-20 flow removed');
 });
 
-test('content.js: batches of 20, lazy details, MIS and jev in parallel, derived pin state', () => {
+test('content.js: separate 探索/MIS actions share batches and Google place details', () => {
   assert.match(content, /EXPLORE_BATCH_SIZE = 20/);
   assert.match(content, /lister\.next\(EXPLORE_BATCH_SIZE/);
-  assert.match(content, /text = "继续探索"/);
-  assert.ok(!content.includes('匹配MIS'), 'button renamed');
+  assert.match(content, /"greenoil-explore-btn"/);
+  assert.match(content, /"greenoil-match-mis-btn"/);
+  assert.match(content, /"匹配MIS"/);
   assert.match(content, /createRateLimiter\(1000\)/, 'detail pages 1/s');
   assert.match(content, /view,\s+\/\/ snapshot/);
-  // details are fetched inside the per-place judgement, never for the list
-  const proc = content.slice(content.indexOf('async function exploreProcessPlace'), content.indexOf('async function runExploreBatch'));
-  assert.match(proc, /fetchPlaceDetail/);
-  assert.ok(!content.slice(content.indexOf('async function runExploreBatch'), content.indexOf('async function handleExploreClick')).includes('fetchPlaceDetail'));
-  // MIS is not awaited before the fried judgement starts, and neither skips the other
-  assert.match(proc, /await Promise\.allSettled\(\[mis, fried\]\)/);
-  assert.ok(!/entry\.state === "mis"/.test(proc), 'jev is not skipped because of MIS');
+  const detail = content.slice(content.indexOf('async function detailedPlace'), content.indexOf('async function processFriedPlace'));
+  assert.match(detail, /entry\.detailLoaded/);
+  assert.match(detail, /entry\.detailPromise/);
+  assert.equal((detail.match(/fetchPlaceDetail/g) || []).length, 1, 'one shared detail loader');
+  const fried = content.slice(content.indexOf('async function processFriedPlace'), content.indexOf('async function processMisPlace'));
+  const mis = content.slice(content.indexOf('async function processMisPlace'), content.indexOf('function addExplorePlaces'));
+  assert.match(fried, /detailedPlace\(session, entry\)/);
+  assert.match(mis, /if \(!candidates\.length\)/, 'MIS without a candidate never loads details');
+  assert.match(mis, /detailedPlace\(session, entry\)/, 'MIS candidate reuses the shared detail');
+  assert.match(mis, /action: "exploreValidateMis"/);
+  const batch = content.slice(content.indexOf('async function runActionBatch'), content.indexOf('async function handleExploreClick'));
+  assert.ok(batch.indexOf('filter(e => !actionDone(e, action))') < batch.indexOf('session.lister.next'), 'shared places are processed before another Google search');
   // pin colour is derived from both results (order-independent)
   assert.match(content, /function exploreState\(entry\) \{\s+if \(entry\.customer\) return "mis";\s+if \(entry\.fried\) return "fried";\s+return "candidate";/);
-  assert.match(proc, /const live = \(\) => session === explore && !session\.cancelled/, 'stale results dropped');
-  const click = content.slice(content.indexOf('async function handleExploreClick'), content.indexOf('function setExploreButtonAuth'));
+  assert.match(fried, /const live = \(\) => session === explore && !session\.cancelled/, 'stale results dropped');
+  const click = content.slice(content.indexOf('async function handleExploreClick'), content.indexOf('function setMisButtonAuth'));
   assert.ok(!click.includes('openMisModal'), 'no modal popup after exploring');
   assert.match(content, /function isOnRoute/);
 });

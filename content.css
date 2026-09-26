@@ -213,8 +213,16 @@
    =================================================== */
 
 .greenoil-mis-circle {
-  background-color: #059669 !important;
+  background-color: #4f46e5 !important;
   color: #ffffff !important;
+}
+
+#greenoil-match-mis-btn .greenoil-action-btn:hover .greenoil-mis-circle {
+  background-color: #4338ca !important;
+}
+
+.greenoil-mis-label {
+  color: #4338ca !important;
 }
 
 .greenoil-mis-disabled .greenoil-action-circle {
