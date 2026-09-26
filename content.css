@@ -572,7 +572,9 @@
 
 /* ===================================================
    Native-aligned Waypoint Pins on Map Canvas
-   (100% Zero-Latency Drag Tracking & 0 Click Interception)
+   (rAF camera-interpolated positioning, 0 click interception)
+   NOTE: z-index stays BELOW Google's floating panels/search UI so pins
+   never paint over the side panel; the map canvas itself is z-index auto.
    =================================================== */
 
 #greenoil-waypoint-pins-overlay {
@@ -581,7 +583,7 @@
   width: 100vw !important;
   height: 100vh !important;
   pointer-events: none !important;
-  z-index: 998 !important;
+  z-index: 2 !important;
   overflow: hidden !important;
   user-select: none !important;
 }
@@ -590,21 +592,27 @@
   position: absolute !important;
   inset: 0 !important;
   pointer-events: none !important;
-  will-change: transform !important;
-  transform: translate3d(0, 0, 0);
+}
+
+/* Hide name labels when zoomed out to reduce clutter (JS toggles .go-zoomed-out) */
+#greenoil-waypoint-pin-layer.go-zoomed-out .greenoil-pin-tooltip {
+  display: none !important;
 }
 
 .greenoil-waypoint-map-pin {
   position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
   width: 32px !important;
   height: 42px !important;
-  transform: translate(-50%, -100%) !important;
+  /* NOTE: JS sets the full transform each frame
+     (translate3d(x,y,0) translate(-50%,-100%)); keep stylesheet neutral. */
   pointer-events: none !important;
   user-select: none !important;
   display: flex !important;
   flex-direction: column !important;
   align-items: center !important;
-  will-change: transform, left, top !important;
+  will-change: transform !important;
   transition: opacity 0.15s ease !important;
 }
 
@@ -636,6 +644,24 @@
   line-height: 18px !important;
   pointer-events: none !important;
   user-select: none !important;
+}
+
+/* MIS match pins: shield glyph centered in the white circle (circle center
+   is at 15,14 in the 30x38 pin SVG) */
+.greenoil-pin-shield {
+  position: absolute !important;
+  left: 9px !important;
+  top: 8px !important;
+  width: 12px !important;
+  height: 12px !important;
+  line-height: 0 !important;
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+/* MIS match pins: indigo glow ring to distinguish from waypoint pins */
+.greenoil-mis-map-pin .greenoil-pin-body {
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 5px rgba(79, 70, 229, 0.6)) !important;
 }
 
 .greenoil-pin-tooltip {

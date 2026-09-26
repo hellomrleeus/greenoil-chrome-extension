@@ -894,6 +894,28 @@ function isPlaceMatch(w, q) {
         return;
       }
 
+      // 8b. Inject the camera bridge into the page's MAIN world so the
+      // content script receives live map-camera updates (one-time per tab;
+      // the bridge script itself is idempotent).
+      if (message.action === "injectCameraBridge") {
+        const tabId = sender?.tab?.id;
+        if (tabId) {
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              world: "MAIN",
+              files: ["camera-bridge.js"],
+            });
+            sendResponse({ success: true });
+          } catch (err) {
+            sendResponse({ success: false, error: err.message });
+          }
+        } else {
+          sendResponse({ success: false, error: "no tab" });
+        }
+        return;
+      }
+
       // 9. Check MIS authentication state
       if (message.action === "checkMisAuth") {
         const auth = await checkMisAuth(Boolean(message.force));

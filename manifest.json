@@ -39,7 +39,7 @@
         "https://*.google.com.tw/maps*",
         "https://*.google.co.jp/maps*"
       ],
-      "js": ["content.js"],
+      "js": ["pin-math.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }
