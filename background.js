@@ -349,6 +349,44 @@ async function rateLimitMisRequest() {
   _lastMisRequestTime = Date.now();
 }
 
+// ---- Local result caches (chrome.storage.local) ----
+// MIS customer records are company data: they are only read while the MIS
+// login is valid and are wiped as soon as a logout is detected (see
+// checkMisAuth). Nearby OSM places are public data and survive logouts.
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MIS_CACHE_KEY = "gce_mis_cache";          // {keyword: {t, records}}
+const NEARBY_CACHE_KEY = "gce_nearby_cache";    // {"lat,lng": {t, places}}
+const MIS_CACHE_MAX = 3000;
+const NEARBY_CACHE_MAX = 300;
+
+async function readCache(key) {
+  const data = await chrome.storage.local.get(key);
+  return data[key] || {};
+}
+
+function freshEntry(entry, now) {
+  return entry && now - entry.t < CACHE_TTL_MS ? entry : null;
+}
+
+/** Drop expired entries and keep the newest `max`. */
+function pruneCache(map, max, now) {
+  return Object.fromEntries(
+    Object.entries(map)
+      .filter(([, e]) => freshEntry(e, now))
+      .sort((a, b) => b[1].t - a[1].t)
+      .slice(0, max)
+  );
+}
+
+// Same place ≈ same 4-decimal coordinates (~11 m).
+function nearbyCacheKey(lat, lng) {
+  return `${lat.toFixed(4)},${lng.toFixed(4)}`;
+}
+
+async function clearMisCache() {
+  await chrome.storage.local.remove(MIS_CACHE_KEY);
+}
+
 /**
  * Check if the user is authenticated in the MIS system
  */
@@ -371,6 +409,9 @@ async function checkMisAuth(force = false) {
       logcheck: logcheckCookie?.value || "",
       hasPhpsessid: Boolean(phpsessidCookie?.value)
     };
+    // Logged out (incl. session cookies gone after a browser restart):
+    // cached customer data must not outlive the MIS session.
+    if (!isAuthed) await clearMisCache().catch(() => {});
     return _cachedMisAuth;
   } catch (err) {
     console.warn("[GreenOil MIS] checkMisAuth error:", err);
@@ -687,9 +728,17 @@ function parseMisCustomerHtml(html) {
   return customers;
 }
 
+// An expired session is answered with the login form (HTTP 200), which
+// would otherwise parse as "no customers".
+function isMisLoginPage(url, html) {
+  return /login/i.test(String(url || "")) || /<input[^>]+type=["']?password/i.test(String(html || ""));
+}
+
 /**
  * Query MIS for a single prefix keyword
  */
+// Returns the parsed records, or null when the query failed (network error,
+// HTTP error, or MIS answered with its login page). null is never cached.
 async function queryMisPrefix(prefix, phpsessid) {
   if (!prefix || prefix.trim().length < 2) return [];
   try {
@@ -700,12 +749,13 @@ async function queryMisPrefix(prefix, phpsessid) {
       credentials: "include"
     });
 
-    if (!resp.ok) return [];
+    if (!resp.ok) return null;
     const html = await resp.text();
+    if (isMisLoginPage(resp.url, html)) return null;
     return parseMisCustomerHtml(html);
   } catch (e) {
     console.warn(`[GreenOil MIS] queryMisPrefix failed for "${prefix}":`, e);
-    return [];
+    return null;
   }
 }
 
@@ -713,13 +763,13 @@ async function queryMisPrefix(prefix, phpsessid) {
  * Silent scan & match MIS customers around a center coordinate
  */
 async function handleScanAndMatchMis(param, sender) {
-  const { lat, lng, placeName, placeAddress } = param || {};
+  const { lat, lng, placeName, placeAddress, forceRefresh } = param || {};
   if (typeof lat !== "number" || typeof lng !== "number") {
     return { success: false, error: "缺少地点坐标" };
   }
 
-  // 1. Check MIS auth status
-  const auth = await checkMisAuth();
+  // 1. Check MIS auth status (fresh: cached customer data is login-gated)
+  const auth = await checkMisAuth(true);
   if (!auth.loggedIn) {
     return { success: false, notLoggedIn: true, error: "未登录 MIS 内部系统" };
   }
@@ -730,8 +780,20 @@ async function handleScanAndMatchMis(param, sender) {
   });
   const phpsessid = phpsessidCookie?.value || "";
 
-  // 2. Fetch the 20 nearest restaurants / fast food / food courts / canteens
-  const nearbyRestaurants = await fetchNearbyRestaurants(lat, lng, 20);
+  const now = Date.now();
+
+  // 2. The 20 nearest restaurants / fast food / food courts / canteens
+  //    (cached per place; Shift+click forces a refresh)
+  const nearbyCache = await readCache(NEARBY_CACHE_KEY);
+  const nearbyKey = nearbyCacheKey(lat, lng);
+  const cachedNearby = !forceRefresh && freshEntry(nearbyCache[nearbyKey], now);
+  const nearbyRestaurants = cachedNearby
+    ? cachedNearby.places
+    : await fetchNearbyRestaurants(lat, lng, 20);
+  if (!cachedNearby && nearbyRestaurants.length > 0) {
+    nearbyCache[nearbyKey] = { t: now, places: nearbyRestaurants };
+    await chrome.storage.local.set({ [NEARBY_CACHE_KEY]: pruneCache(nearbyCache, NEARBY_CACHE_MAX, now) });
+  }
 
   // 3. Candidates: the clicked place first, then the nearby places
   const candidates = [];
@@ -757,7 +819,10 @@ async function handleScanAndMatchMis(param, sender) {
   // 4. One MIS query per unique address prefix / English name
   const plans = planMisQueries(candidates);
 
-  // 5. Query MIS, throttled strictly to 1 request per second
+  // 5. Query MIS (cache first), throttled strictly to 1 request per second
+  const misCache = await readCache(MIS_CACHE_KEY);
+  let misCacheDirty = false;
+  let cachedQueries = 0;
   const matchedCustomers = [];
   const seenCodes = new Set();
   let currentIdx = 0;
@@ -778,10 +843,23 @@ async function handleScanAndMatchMis(param, sender) {
       }).catch(() => {});
     }
 
-    // Strict throttle: 1 request per second
-    await rateLimitMisRequest();
-
-    const records = await queryMisPrefix(prefix, phpsessid);
+    const cacheKey = `${plan.kind}:${prefix.toLowerCase()}`;
+    const cached = !forceRefresh && freshEntry(misCache[cacheKey], now);
+    let records;
+    if (cached) {
+      records = cached.records;
+      cachedQueries++;
+    } else {
+      // Strict throttle: 1 request per second
+      await rateLimitMisRequest();
+      records = await queryMisPrefix(prefix, phpsessid);
+      if (records) {
+        misCache[cacheKey] = { t: Date.now(), records };
+        misCacheDirty = true;
+      } else {
+        records = [];
+      }
+    }
     // [record, candidate it belongs to]. Name hits are tied to the branch
     // whose street they matched.
     const hits = plan.kind === "name"
@@ -812,12 +890,20 @@ async function handleScanAndMatchMis(param, sender) {
     }
   }
 
+  // Persist only while still logged in (a logout mid-scan wipes the cache).
+  if (misCacheDirty && (await checkMisAuth(true)).loggedIn) {
+    await chrome.storage.local.set({ [MIS_CACHE_KEY]: pruneCache(misCache, MIS_CACHE_MAX, Date.now()) });
+  }
+
   const { activeRoute } = await getOrInitColorRoutes();
 
   return {
     success: true,
     matches: matchedCustomers,
     totalScanned: candidates.length,
+    totalQueries: totalPrefixes,
+    cachedQueries,
+    nearbyFromCache: Boolean(cachedNearby),
     activeRoute
   };
 }

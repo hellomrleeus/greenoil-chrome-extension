@@ -126,3 +126,94 @@ test('uses Overpass alone when it already has enough places', async () => {
   assert.equal(out[0].name, 'R24', 'nearest first');
   assert.equal(calls.length, 1, 'one radius was enough, no fallback');
 });
+
+// ---------- MIS / nearby result caches ----------
+
+function loadHandler({ loggedIn = true, misHtml, misUrl = 'https://mis.greenoilinc.com/index_intranet.php' } = {}) {
+  const store = {};
+  const misCalls = [];
+  const cookies = () => (state.loggedIn ? [{ name: 'LOGCHECK', value: '1' }, { name: 'PHPSESSID', value: 'x' }] : []);
+  const state = { loggedIn };
+  const place = (i) => ({ type: 'node', id: i, lat: HERE.lat + 0.0001 * i, lon: HERE.lng,
+    tags: { amenity: 'restaurant', name: `R${i}`, 'addr:housenumber': String(100 + i), 'addr:street': 'Main Street' } });
+  const ctx = vm.createContext({
+    console: { warn() {}, log() {} }, URLSearchParams, AbortSignal, Date, Math, Object, Promise,
+    setTimeout: (fn) => { fn(); return 0; },
+    fetch: async (url) => {
+      url = String(url);
+      if (url.includes('overpass')) {
+        return { ok: true, json: async () => ({ elements: Array.from({ length: 20 }, (_, i) => place(i)) }) };
+      }
+      misCalls.push(url);
+      return { ok: true, url: misUrl, text: async () => misHtml || '<table></table>' };
+    },
+    chrome: {
+      storage: { local: {
+        get: async (k) => ({ [k]: store[k] }),
+        set: async (o) => Object.assign(store, JSON.parse(JSON.stringify(o))),
+        remove: async (k) => { delete store[k]; },
+      } },
+      cookies: {
+        getAll: async () => cookies(),
+        get: async () => cookies().find((c) => c.name === 'PHPSESSID') || null,
+        onChanged: { addListener() {} },
+      },
+      tabs: { sendMessage: async () => {}, query() {} },
+    },
+    getOrInitColorRoutes: async () => ({ activeRoute: null }),
+  });
+  vm.runInContext(slice('function getHaversineDistKm', '\n}\n') + '\n}\n', ctx);
+  vm.runInContext(slice('let _cachedMisAuth', '// Runtime Message Dispatcher'), ctx);
+  const scan = (extra = {}) => vm.runInContext('handleScanAndMatchMis', ctx)({ lat: HERE.lat, lng: HERE.lng, ...extra }, {});
+  return { ctx, store, misCalls, state, scan };
+}
+
+test('second scan of the same place is served from cache (no MIS, no Overpass)', async () => {
+  const h = loadHandler();
+  const r1 = await h.scan();
+  assert.equal(r1.success, true);
+  assert.equal(r1.cachedQueries, 0);
+  const firstCalls = h.misCalls.length;
+  assert.ok(firstCalls > 0);
+  assert.ok(h.store.gce_mis_cache && h.store.gce_nearby_cache);
+
+  const r2 = await h.scan();
+  assert.equal(h.misCalls.length, firstCalls, 'no new MIS requests');
+  assert.equal(r2.cachedQueries, r2.totalQueries);
+  assert.equal(r2.nearbyFromCache, true);
+
+  await h.scan({ forceRefresh: true });
+  assert.equal(h.misCalls.length, firstCalls * 2, 'Shift+click re-queries everything');
+});
+
+test('logging out of MIS wipes cached customer data (nearby places stay)', async () => {
+  const h = loadHandler();
+  await h.scan();
+  assert.ok(h.store.gce_mis_cache);
+  h.state.loggedIn = false;
+  const r = await h.scan();
+  assert.equal(r.notLoggedIn, true, 'cache is not served while logged out');
+  assert.equal(h.store.gce_mis_cache, undefined, 'customer cache deleted');
+  assert.ok(h.store.gce_nearby_cache, 'public OSM places kept');
+});
+
+test('an MIS login page (expired session) is never cached as "no customers"', async () => {
+  const h = loadHandler({ misHtml: '<form><input type="password" name="pw"></form>' });
+  await h.scan();
+  assert.deepEqual(Object.keys(h.store.gce_mis_cache || {}), []);
+  const h2 = loadHandler({ misUrl: 'https://mis.greenoilinc.com/login_intranet.php' });
+  await h2.scan();
+  assert.deepEqual(Object.keys(h2.store.gce_mis_cache || {}), []);
+});
+
+test('cache entries expire after 30 days and are capped', () => {
+  const h = loadHandler();
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  const pruned = plain(vm.runInContext('pruneCache', h.ctx)({
+    fresh: { t: now - 29 * day }, old: { t: now - 31 * day }, newest: { t: now },
+  }, 1, now));
+  assert.deepEqual(Object.keys(pruned), ['newest']);
+  const all = plain(vm.runInContext('pruneCache', h.ctx)({ fresh: { t: now - 29 * day }, old: { t: now - 31 * day } }, 10, now));
+  assert.deepEqual(Object.keys(all), ['fresh']);
+});

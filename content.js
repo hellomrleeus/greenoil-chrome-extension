@@ -755,7 +755,7 @@ if (window.__greenoil_injected__) {
     }
   }
 
-  async function handleMisBtnClick(container, circle, label) {
+  async function handleMisBtnClick(container, circle, label, forceRefresh = false) {
     if (container.classList.contains("greenoil-mis-disabled")) {
       const liveAuth = await new Promise((resolve) => {
         if (!chrome.runtime?.id) return resolve({ loggedIn: false });
@@ -805,7 +805,8 @@ if (window.__greenoil_injected__) {
         lat: latestPlace.latitude,
         lng: latestPlace.longitude,
         placeName: latestPlace.name,
-        placeAddress: latestPlace.address
+        placeAddress: latestPlace.address,
+        forceRefresh
       }, (resp) => {
         circle.innerHTML = SVG_MIS_SHIELD;
         container.classList.remove("greenoil-loading");
@@ -824,7 +825,10 @@ if (window.__greenoil_injected__) {
 
         if (resp && resp.success) {
           const matches = resp.matches || [];
-          showToast("MIS匹配完成", `已扫描周边 ${resp.totalScanned} 家餐馆，匹配到 ${matches.length} 家签约客户！`, true);
+          const cacheNote = resp.cachedQueries > 0
+            ? `（${resp.cachedQueries}/${resp.totalQueries} 项来自缓存，Shift+点击可强制刷新）`
+            : "";
+          showToast("MIS匹配完成", `已扫描周边 ${resp.totalScanned} 家餐馆，匹配到 ${matches.length} 家签约客户！${cacheNote}`, true);
           // Pins + heading badge only; details open on demand (badge / pill click).
           renderMisPins(matches);
         } else {
@@ -1396,7 +1400,8 @@ if (window.__greenoil_injected__) {
       misBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
-        handleMisBtnClick(misContainer, misCircle, misLabel);
+        // Shift+click: ignore cached results and re-query MIS.
+        handleMisBtnClick(misContainer, misCircle, misLabel, e.shiftKey);
       });
 
       targetRow.insertBefore(misContainer, dirItem);
