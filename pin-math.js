@@ -91,6 +91,44 @@ function shouldSmoothPan(cam, lat, lng, maxKm) {
   return haversineKm(cam.lat, cam.lng, lat, lng) < maxKm;
 }
 
+/**
+ * Visible map rect: the canvas rect minus the area covered by Google's
+ * left panel (div[role="main"]). The URL camera (@lat,lng) is the center of
+ * the VISIBLE map, not the full canvas, so without this correction every
+ * pin is shifted left by half the panel width when the panel is open.
+ * canvasRect / panelRect are plain {left,top,width,height} (viewport px).
+ */
+function visibleMapRect(canvasRect, panelRect) {
+  const r = {
+    left: canvasRect.left,
+    top: canvasRect.top,
+    width: canvasRect.width,
+    height: canvasRect.height,
+  };
+  if (
+    panelRect &&
+    panelRect.width > 50 &&
+    panelRect.height > 50 &&
+    panelRect.left <= r.left + 2
+  ) {
+    const overlap = Math.max(0, Math.min(panelRect.width, r.width));
+    r.left += overlap;
+    r.width -= overlap;
+  }
+  return r;
+}
+
+/** True when a projected point lies inside rect (with an optional margin). */
+function pointInRect(x, y, rect, margin) {
+  const m = margin || 0;
+  return (
+    x >= rect.left - m &&
+    x <= rect.left + rect.width + m &&
+    y >= rect.top - m &&
+    y <= rect.top + rect.height + m
+  );
+}
+
 const api = {
   parseCameraFromUrl,
   sameCamera,
@@ -99,6 +137,8 @@ const api = {
   rebaseDragDelta,
   haversineKm,
   shouldSmoothPan,
+  visibleMapRect,
+  pointInRect,
 };
 
 if (typeof module !== "undefined" && module.exports) {

@@ -270,6 +270,19 @@ if (window.__greenoil_injected__) {
     return { left: 0, top: 0, width: (window.innerWidth || 0), height: (window.innerHeight || 0) };
   }
 
+  // Visible map area: canvas minus Google's left panel (div[role="main"]).
+  // The URL camera is centered on the visible map, so pins must be
+  // projected against this rect, not the full canvas.
+  function visibleMapRect() {
+    if (!pinMath) return mapCanvasRect();
+    let panelRect = null;
+    try {
+      const panel = document.querySelector('div[role="main"]');
+      if (panel && panel.getBoundingClientRect) panelRect = panel.getBoundingClientRect();
+    } catch (_) {}
+    return pinMath.visibleMapRect(mapCanvasRect(), panelRect);
+  }
+
   function ensurePinLayer() {
     let overlay = document.getElementById("greenoil-waypoint-pins-overlay");
     if (!overlay) {
@@ -294,7 +307,7 @@ if (window.__greenoil_injected__) {
     // Rebase the transient drag delta so pins do not jump when the
     // (lagging) URL camera catches up with the map.
     if (pinDrag && camB) {
-      try { pinMath.rebaseDragDelta(pinDrag, camB, cam, mapCanvasRect()); } catch (_) {}
+      try { pinMath.rebaseDragDelta(pinDrag, camB, cam, visibleMapRect()); } catch (_) {}
     }
     camA = camB;
     camB = { lat: cam.lat, lng: cam.lng, zoom: cam.zoom, t };
@@ -329,13 +342,20 @@ if (window.__greenoil_injected__) {
         if (layer.style.display !== "none") layer.style.display = "none";
       } else {
         if (layer.style.display === "none") layer.style.display = "";
-        const rect = mapCanvasRect();
+        const rect = visibleMapRect();
         const dx = pinDrag ? pinDrag.dx : 0;
         const dy = pinDrag ? pinDrag.dy : 0;
-        layer.classList.toggle("go-zoomed-out", cam.zoom < 14);
         for (let i = 0; i < pinItems.length; i++) {
           const p = pinItems[i];
           const pt = pinMath.projectToViewport(p.lat, p.lng, cam, rect);
+          // Clip pins whose anchor is outside the visible map (e.g. panned
+          // away or behind the side panel) instead of letting them float
+          // over Google's UI.
+          if (!pinMath.pointInRect(pt.x, pt.y, rect, 48)) {
+            if (p.el.style.display !== "none") p.el.style.display = "none";
+            continue;
+          }
+          if (p.el.style.display === "none") p.el.style.display = "";
           p.el.style.transform =
             `translate3d(${(pt.x + dx).toFixed(1)}px, ${(pt.y + dy).toFixed(1)}px, 0) translate(-50%, -100%)`;
         }
@@ -369,8 +389,7 @@ if (window.__greenoil_injected__) {
             <circle cx="15" cy="14" r="9" fill="#ffffff"/>
           </svg>
           <span class="greenoil-pin-num" style="color:${themeColor}">${idx + 1}</span>
-        </div>
-        <div class="greenoil-pin-tooltip">${escapeHtml(wp.name || `第 ${idx + 1} 站`)}</div>`;
+        </div>`;
       layer.appendChild(pin);
       pinItems.push({ el: pin, lat, lng });
     });
@@ -389,8 +408,7 @@ if (window.__greenoil_injected__) {
             <circle cx="15" cy="14" r="9" fill="#ffffff"/>
           </svg>
           <span class="greenoil-pin-shield">${SVG_MIS_SHIELD_SM}</span>
-        </div>
-        <div class="greenoil-pin-tooltip">${escapeHtml(m.name || "MIS签约")}</div>`;
+        </div>`;
       layer.appendChild(pin);
       pinItems.push({ el: pin, lat, lng });
     });
@@ -484,7 +502,7 @@ if (window.__greenoil_injected__) {
   function smoothDragPanTo(targetPath, tLat, tLng, cam) {
     const canvas = document.querySelector("canvas.H1VXrf");
     if (!canvas || typeof PointerEvent === "undefined" || !pinMath) return false;
-    const rect = canvas.getBoundingClientRect();
+    const rect = visibleMapRect();
     const startX = rect.left + rect.width / 2;
     const startY = rect.top + rect.height / 2;
     const pt = pinMath.projectToViewport(tLat, tLng, cam, rect);

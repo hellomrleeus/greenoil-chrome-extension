@@ -119,14 +119,45 @@ test('renderMisPins renders shield pins instead of wiping the overlay', () => {
   assert.ok(source.includes('greenoil-mis-map-pin'), 'MIS pins need a distinct style hook');
 });
 
-test('CSS keeps pins below Google panels, click-through, with MIS + zoom styles', () => {
+test('visibleMapRect subtracts the open side panel; pointInRect clips', () => {
+  const canvas = { left: 0, top: 0, width: 1600, height: 900 };
+  const panel = { left: 0, top: 0, width: 400, height: 900 };
+  const vis = pinMath.visibleMapRect(canvas, panel);
+  assert.deepEqual([vis.left, vis.width], [400, 1200], 'panel width removed from the left');
+  assert.equal(vis.height, 900);
+  // Camera at visible center -> projects to visible center, not canvas center
+  const cam = { lat: 0, lng: 0, zoom: 10 };
+  const pt = pinMath.projectToViewport(0, 0, cam, vis);
+  assert.ok(Math.abs(pt.x - 1000) < 1e-6, `visible center x=${pt.x}`);
+  // No panel -> rect unchanged
+  const vis2 = pinMath.visibleMapRect(canvas, null);
+  assert.deepEqual([vis2.left, vis2.width], [0, 1600]);
+  const tiny = pinMath.visibleMapRect(canvas, { left: 0, top: 0, width: 10, height: 900 });
+  assert.deepEqual([tiny.left, tiny.width], [0, 1600], 'tiny slivers are not panels');
+  // Clipping
+  assert.ok(pinMath.pointInRect(1000, 450, vis, 48));
+  assert.ok(!pinMath.pointInRect(100, 450, vis, 48), 'behind panel -> clipped');
+  assert.ok(!pinMath.pointInRect(2000, 450, vis, 48), 'off-canvas -> clipped');
+  assert.ok(pinMath.pointInRect(390, 450, vis, 48), 'margin keeps edge pins');
+});
+
+test('CSS keeps pins below Google panels, click-through, with MIS styles', () => {
   assert.ok(!css.includes('.greenoil-heading-waypoint-badge'), 'no heading waypoint badge');
   assert.match(css, /#greenoil-waypoint-pins-overlay/);
   assert.match(css, /#greenoil-waypoint-pin-layer/);
   assert.match(css, /\.greenoil-waypoint-map-pin/);
   assert.match(css, /\.greenoil-mis-map-pin/);
-  assert.match(css, /\.go-zoomed-out/);
+  assert.ok(!css.includes('.greenoil-pin-tooltip'), 'name tooltip removed (was the black bar + backdrop-filter jank)');
+  assert.ok(!css.includes('.go-zoomed-out'), 'zoom label-hiding rule removed with the tooltip');
+  const blurs = (css.match(/backdrop-filter/g) || []).length;
+  assert.equal(blurs, 1, 'only the static MIS modal may keep backdrop blur, not per-frame pins');
   assert.match(css, /\.greenoil-pin-shield/);
   assert.ok(!/z-index:\s*998/.test(css), 'overlay must not sit above Google panels');
   assert.match(css, /pointer-events:\s*none\s*!important/);
+});
+
+test('pin engine projects against the visible map rect and clips off-map pins', () => {
+  assert.ok(source.includes('visibleMapRect()'), 'pinTick/smooth-pan must use the panel-aware rect');
+  assert.ok(source.includes('pointInRect'), 'off-map pins must be clipped, not floated over Google UI');
+  assert.ok(!source.includes('greenoil-pin-tooltip'), 'no tooltip markup in pin templates');
 });
