@@ -287,3 +287,11 @@ test('CSS: overlay lives in the map container, click-through, pins anchored at t
   assert.match(css, /\.greenoil-pin-shield/);
   assert.ok(!css.includes('.greenoil-pin-tooltip'));
 });
+
+test('MIS match completion shows pins only; the details modal is not auto-opened', () => {
+  const start = source.indexOf('async function handleMisBtnClick');
+  const end = source.indexOf('\n  }\n', source.indexOf('action: "scanAndMatchMis"', start));
+  const body = source.slice(start, end);
+  assert.ok(body.includes('renderMisPins(matches)'));
+  assert.ok(!body.includes('openMisModal'), 'no modal popup after matching');
+});

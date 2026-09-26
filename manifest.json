@@ -67,6 +67,8 @@
     "https://greenoil-api.ydxhjw4j5w.workers.dev/*",
     "*://*.greenoilinc.com/*",
     "*://greenoilinc.com/*",
+    "https://overpass-api.de/*",
+    "https://maps.mail.ru/*",
     "https://nominatim.openstreetmap.org/*"
   ]
 }

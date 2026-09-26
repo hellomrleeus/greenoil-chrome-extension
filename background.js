@@ -418,80 +418,229 @@ function extractStreetPrefix(raw) {
   return part;
 }
 
+// ---- Nearby food places (OpenStreetMap) ----
+// Nominatim cannot sort by distance (it ranks by relevance and caps the
+// result count), so "nearest N" comes primarily from Overpass: fetch every
+// matching POI inside a radius, sort by true distance, keep the first N,
+// widening the radius until there are enough. Public Overpass instances
+// are often overloaded, so Nominatim category searches over widening
+// boxes (again sorted by distance) are the fallback.
+
+const OVERPASS_ENDPOINTS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+];
+const NEARBY_RADII_M = [1000, 3000, 6000];
+// Restaurants, fast food, food courts and canteens. Cafés (amenity=cafe)
+// and bakeries (shop=bakery) are different tags and never selected.
+const NEARBY_AMENITIES = "restaurant|fast_food|food_court|canteen";
+// ...but some cafés/bakeries are tagged restaurant/fast_food with a cuisine.
+const EXCLUDED_CUISINE_RE = /^(coffee_shop|coffee|cafe|bakery|cake|pastry|donut|doughnut|cookie|cookies)$/i;
+const NOMINATIM_QUERIES = ["restaurant", "fast food", "food court"];
+const NOMINATIM_BOXES_DEG = [0.006, 0.012, 0.025, 0.05]; // half-height in latitude
+const OSM_USER_AGENT = "GreenOilChromeExt/1.0"; // Overpass/Nominatim reject anonymous clients
+
+function buildOverpassQuery(lat, lng, radiusM) {
+  return `[out:json][timeout:25];` +
+    `nwr["amenity"~"^(${NEARBY_AMENITIES})$"]["name"](around:${radiusM},${lat},${lng});` +
+    `out center tags;`;
+}
+
+function isExcludedCuisine(cuisine) {
+  return String(cuisine || "")
+    .split(/[;,]/)
+    .some(c => EXCLUDED_CUISINE_RE.test(c.trim()));
+}
+
+// English store name: name:en, else name when it is written in Latin script.
+function englishName(tags) {
+  const latin = /^[\x20-\x7EÀ-ɏ’]+$/;
+  for (const v of [tags["name:en"], tags.name]) {
+    const n = String(v || "").replace(/’/g, "'").replace(/\s+/g, " ").trim();
+    if (n.length >= 3 && latin.test(n) && /[A-Za-z]/.test(n)) return n;
+  }
+  return "";
+}
+
 /**
- * Fetch up to 20 nearest restaurants around (lat, lng) silently using Nominatim
+ * OSM tags + position -> candidate, or null when excluded.
+ * Candidate: {name, englishName, houseNumber, street, streetPrefix,
+ *             displayName, latitude, longitude, distanceKm}
+ */
+function toFoodCandidate(tags, plat, plng, lat, lng) {
+  if (!tags || !tags.name || !Number.isFinite(plat) || !Number.isFinite(plng)) return null;
+  if (isExcludedCuisine(tags.cuisine)) return null;
+  const houseNumber = String(tags["addr:housenumber"] || "").trim();
+  const street = String(tags["addr:street"] || "").trim();
+  return {
+    name: tags.name,
+    englishName: englishName(tags),
+    houseNumber,
+    street,
+    streetPrefix: houseNumber && street ? `${houseNumber} ${street}` : "",
+    displayName: [houseNumber, street, tags["addr:city"]].filter(Boolean).join(" "),
+    latitude: plat,
+    longitude: plng,
+    distanceKm: getHaversineDistKm(lat, lng, plat, plng)
+  };
+}
+
+/** Sort nearest first; drop duplicates (same name within 30 m). */
+function nearestUnique(cands) {
+  const sorted = cands.filter(Boolean).sort((a, b) => a.distanceKm - b.distanceKm);
+  return sorted.filter((c, i) => !sorted.slice(0, i).some(p =>
+    p.name.toLowerCase() === c.name.toLowerCase() &&
+    getHaversineDistKm(p.latitude, p.longitude, c.latitude, c.longitude) < 0.03));
+}
+
+function parseOverpassFood(elements, lat, lng) {
+  return nearestUnique((elements || []).map(el =>
+    toFoodCandidate(el.tags, el.lat ?? el.center?.lat, el.lon ?? el.center?.lon, lat, lng)));
+}
+
+function parseNominatimFood(results, lat, lng) {
+  return nearestUnique((results || []).map(d => {
+    const a = d.address || {};
+    const n = d.namedetails || {};
+    const x = d.extratags || {};
+    return toFoodCandidate({
+      name: d.name || n.name,
+      "name:en": n["name:en"],
+      cuisine: x.cuisine,
+      "addr:housenumber": a.house_number,
+      "addr:street": a.road,
+      "addr:city": a.city || a.town
+    }, parseFloat(d.lat), parseFloat(d.lon), lat, lng);
+  }));
+}
+
+async function overpassFetch(query) {
+  let lastErr = null;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        body: new URLSearchParams({ data: query }),
+        headers: { "User-Agent": OSM_USER_AGENT },
+        signal: AbortSignal.timeout(12000)
+      });
+      if (resp.ok) return (await resp.json()).elements || [];
+      lastErr = new Error(`Overpass HTTP ${resp.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error("Overpass unavailable");
+}
+
+async function nearbyViaOverpass(lat, lng, limit) {
+  let found = null;
+  for (const radius of NEARBY_RADII_M) {
+    try {
+      found = parseOverpassFood(await overpassFetch(buildOverpassQuery(lat, lng, radius)), lat, lng);
+    } catch (err) {
+      console.warn(`[GreenOil MIS] Overpass (${radius} m) failed:`, err);
+      break; // keep what a smaller radius already found
+    }
+    if (found.length >= limit) break;
+  }
+  return found; // null = Overpass unusable
+}
+
+let _lastNominatimAt = 0;
+async function nominatimSearch(q, lat, lng, halfLat) {
+  // Nominatim usage policy: at most 1 request per second.
+  const wait = _lastNominatimAt + 1100 - Date.now();
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _lastNominatimAt = Date.now();
+  const halfLng = halfLat / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  const params = new URLSearchParams({
+    q, format: "jsonv2", addressdetails: "1", extratags: "1", namedetails: "1",
+    bounded: "1", limit: "40",
+    viewbox: [lng - halfLng, lat + halfLat, lng + halfLng, lat - halfLat].map(v => v.toFixed(5)).join(",")
+  });
+  const resp = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+    headers: { "User-Agent": OSM_USER_AGENT },
+    signal: AbortSignal.timeout(15000)
+  });
+  return resp.ok ? resp.json() : [];
+}
+
+async function nearbyViaNominatim(lat, lng, limit) {
+  let found = [];
+  for (const half of NOMINATIM_BOXES_DEG) {
+    const results = [];
+    for (const q of NOMINATIM_QUERIES) {
+      try {
+        results.push(...await nominatimSearch(q, lat, lng, half));
+      } catch (err) {
+        console.warn(`[GreenOil MIS] Nominatim "${q}" failed:`, err);
+      }
+    }
+    found = parseNominatimFood(results, lat, lng);
+    if (found.length >= limit) break;
+  }
+  return found;
+}
+
+/**
+ * The `limit` nearest restaurants / fast food / food courts / canteens
+ * around (lat, lng), nearest first. Cafés and bakeries excluded.
  */
 async function fetchNearbyRestaurants(lat, lng, limit = 20) {
-  try {
-    const dLat = 0.035;
-    const dLng = 0.045;
-    const minLng = (lng - dLng).toFixed(5);
-    const maxLng = (lng + dLng).toFixed(5);
-    const minLat = (lat - dLat).toFixed(5);
-    const maxLat = (lat + dLat).toFixed(5);
-
-    const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=restaurant&viewbox=${minLng},${maxLat},${maxLng},${minLat}&bounded=1&limit=${limit}`;
-    const resp = await fetch(url, {
-      signal: AbortSignal.timeout(15000),
-      headers: {
-        "User-Agent": "GreenOilChromeExt/1.0"
-      }
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      if (Array.isArray(data) && data.length > 0) {
-        return data.map(d => {
-          const addr = d.address || {};
-          let prefix = "";
-          if (addr.house_number && addr.road) {
-            prefix = `${addr.house_number} ${addr.road}`.trim();
-          } else if (addr.road) {
-            prefix = addr.road.trim();
-          } else {
-            prefix = extractStreetPrefix(d.display_name);
-          }
-          return {
-            name: d.name || (d.display_name ? d.display_name.split(",")[0] : "餐馆"),
-            displayName: d.display_name || "",
-            latitude: parseFloat(d.lat),
-            longitude: parseFloat(d.lon),
-            streetPrefix: prefix
-          };
-        });
-      }
-    }
-
-    // Fallback: search query near lat, lng
-    const fbUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=restaurant+near+${lat},${lng}&limit=${limit}`;
-    const fbResp = await fetch(fbUrl, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": "GreenOilChromeExt/1.0" } });
-    if (fbResp.ok) {
-      const fbData = await fbResp.json();
-      if (Array.isArray(fbData)) {
-        return fbData.map(d => {
-          const addr = d.address || {};
-          let prefix = "";
-          if (addr.house_number && addr.road) {
-            prefix = `${addr.house_number} ${addr.road}`.trim();
-          } else {
-            prefix = extractStreetPrefix(d.display_name);
-          }
-          return {
-            name: d.name || (d.display_name ? d.display_name.split(",")[0] : "餐馆"),
-            displayName: d.display_name || "",
-            latitude: parseFloat(d.lat),
-            longitude: parseFloat(d.lon),
-            streetPrefix: prefix
-          };
-        });
-      }
-    }
-
-    return [];
-  } catch (err) {
-    console.warn("[GreenOil MIS] fetchNearbyRestaurants failed:", err);
-    return [];
+  let found = await nearbyViaOverpass(lat, lng, limit);
+  if (!found || found.length < limit) {
+    const fallback = await nearbyViaNominatim(lat, lng, limit);
+    if (!found || fallback.length > found.length) found = fallback;
   }
+  return found.slice(0, limit);
+}
+
+// ---- MIS query planning ----
+// Places with a house number are searched by "number + street"; places
+// without one by their English name. A name search on a chain ("Subway")
+// returns every branch, so its hits are narrowed to the same street when
+// OSM knows it, and otherwise only accepted when unambiguous.
+
+const NAME_MATCH_MAX_HITS = 3;
+
+function normalizeStreetKey(street) {
+  return String(street || "")
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .replace(/\b(street|st|avenue|ave|road|rd|drive|dr|boulevard|blvd|crescent|cres|court|ct|place|pl|lane|ln|parkway|pkwy|highway|hwy|way|terrace|square|sq|east|west|north|south|e|w|n|s)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** candidates -> [{kind: "address"|"name", keyword, candidates: [...]}] */
+function planMisQueries(candidates) {
+  const plans = new Map();
+  for (const c of candidates) {
+    let kind = "";
+    let keyword = "";
+    if (c.streetPrefix && /^\d/.test(c.streetPrefix)) {
+      kind = "address";
+      keyword = c.streetPrefix;
+    } else if (c.englishName) {
+      kind = "name";
+      keyword = c.englishName;
+    }
+    if (keyword.trim().length < 3) continue;
+    const key = `${kind}:${keyword.toLowerCase()}`;
+    if (!plans.has(key)) plans.set(key, { kind, keyword, candidates: [] });
+    plans.get(key).candidates.push(c);
+  }
+  return [...plans.values()];
+}
+
+/** Narrow a name search's MIS hits to the candidate's own location. */
+function filterNameHits(records, candidate) {
+  const streetKey = normalizeStreetKey(candidate.street);
+  if (streetKey) {
+    return records.filter(r => normalizeStreetKey(r.address).includes(streetKey));
+  }
+  return records.length <= NAME_MATCH_MAX_HITS ? records : [];
 }
 
 /**
@@ -581,47 +730,43 @@ async function handleScanAndMatchMis(param, sender) {
   });
   const phpsessid = phpsessidCookie?.value || "";
 
-  // 2. Fetch nearest 20 restaurants
+  // 2. Fetch the 20 nearest restaurants / fast food / food courts / canteens
   const nearbyRestaurants = await fetchNearbyRestaurants(lat, lng, 20);
 
-  // 3. Assemble all candidates including the clicked place
+  // 3. Candidates: the clicked place first, then the nearby places
   const candidates = [];
   if (placeName && placeAddress) {
+    const prefix = extractStreetPrefix(placeAddress);
     candidates.push({
       name: placeName,
+      englishName: englishName({ name: placeName }),
+      street: prefix.replace(/^\d+[\w-]*\s+/, ""),
+      streetPrefix: /^\d/.test(prefix) ? prefix : "",
       displayName: placeAddress,
       latitude: lat,
       longitude: lng,
-      streetPrefix: extractStreetPrefix(placeAddress)
+      distanceKm: 0
     });
   }
-
   for (const r of nearbyRestaurants) {
-    if (!candidates.some(c => c.name.toLowerCase() === r.name.toLowerCase())) {
-      candidates.push(r);
-    }
+    const dup = candidates.some(c => c.name.toLowerCase() === r.name.toLowerCase() &&
+      getHaversineDistKm(c.latitude, c.longitude, r.latitude, r.longitude) < 0.03);
+    if (!dup) candidates.push(r);
   }
 
-  // 4. Group candidates by unique street prefix to avoid repeated queries to MIS
-  const prefixMap = new Map();
-  for (const c of candidates) {
-    const p = (c.streetPrefix || "").trim();
-    if (p.length >= 3) {
-      if (!prefixMap.has(p)) {
-        prefixMap.set(p, []);
-      }
-      prefixMap.get(p).push(c);
-    }
-  }
+  // 4. One MIS query per unique address prefix / English name
+  const plans = planMisQueries(candidates);
 
-  // 5. Query MIS for each unique prefix throttled strictly to 1 second per request
+  // 5. Query MIS, throttled strictly to 1 request per second
   const matchedCustomers = [];
   const seenCodes = new Set();
   let currentIdx = 0;
-  const totalPrefixes = prefixMap.size;
+  const totalPrefixes = plans.length;
 
-  for (const [prefix, candList] of prefixMap.entries()) {
+  for (const plan of plans) {
     currentIdx++;
+    const prefix = plan.keyword;
+    const candList = plan.candidates;
 
     // Broadcast real-time progress to caller tab (e.g. 1/6, 2/6...)
     if (sender?.tab?.id) {
@@ -637,14 +782,19 @@ async function handleScanAndMatchMis(param, sender) {
     await rateLimitMisRequest();
 
     const records = await queryMisPrefix(prefix, phpsessid);
-    for (const rec of records) {
+    // [record, candidate it belongs to]. Name hits are tied to the branch
+    // whose street they matched.
+    const hits = plan.kind === "name"
+      ? candList.flatMap(cand => filterNameHits(records, cand).map(rec => [rec, cand]))
+      : records.map(rec => [rec, null]);
+    for (const [rec, hitCand] of hits) {
       if (!rec.code || seenCodes.has(rec.code)) continue;
       seenCodes.add(rec.code);
 
       // Associate best coordinate from candidate list
-      let bestCand = candList[0] || candidates[0];
+      let bestCand = hitCand || candList[0] || candidates[0];
       const recAddr = rec.address.toLowerCase();
-      for (const cand of candList) {
+      for (const cand of hitCand ? [] : candList) {
         if (cand.displayName && (cand.displayName.toLowerCase().includes(recAddr) || recAddr.includes(cand.displayName.toLowerCase()))) {
           bestCand = cand;
           break;
@@ -656,6 +806,7 @@ async function handleScanAndMatchMis(param, sender) {
         latitude: bestCand ? bestCand.latitude : lat,
         longitude: bestCand ? bestCand.longitude : lng,
         matchedPrefix: prefix,
+        matchedBy: plan.kind,
         matchedCandidateName: bestCand ? bestCand.name : ""
       });
     }
