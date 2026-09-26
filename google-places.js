@@ -5,8 +5,8 @@
  * node tests. Two same-origin requests, both the ones Google Maps makes
  * itself (the user's own session):
  *
- *   /search?tbm=map         the "Restaurants" chip for a map view, paged
- *                           (!7i page size, !8i offset) -> name, categories,
+ *   /search?tbm=map         the "Restaurants" chip for a map view, paged on
+ *                           demand (!7i size, !8i offset) -> name, categories,
  *                           address with house number, coordinates, id
  *   /maps/preview/place     a place's detail panel -> Google's description,
  *                           the owner's description, review snippets
@@ -233,41 +233,72 @@
   }
 
   /**
-   * Every wanted food place inside `view`, streamed: onPlaces(newPlaces) is
-   * called after each result page with the places not seen before. Pages
-   * go through `schedule` (a rate limiter). Resolves with the total count;
-   * throws if Google returned no parsable records at all.
+   * Resumable lister for the wanted food places inside `view` (探索 works
+   * in batches). next(n) pages through Google's searches only as far as
+   * needed to return up to n places not returned before, nearest to the
+   * view center first; `done` turns true when every query is exhausted.
+   * Pages go through `schedule` (a rate limiter). Throws when Google
+   * returned nothing parsable at all (format changed).
    */
-  async function fetchWindowPlaces(view, { onPlaces, schedule, fetchImpl, isCancelled } = {}) {
+  function createWindowLister(view, { schedule, fetchImpl } = {}) {
     const doFetch = fetchImpl || fetch;
     const run = schedule || ((fn) => fn());
     const seen = new Set();
+    const buffer = [];
+    let q = 0;
+    let page = 0;
     let parsedAny = false;
-    for (const q of QUERIES) {
-      for (let page = 0; page < MAX_PAGES_PER_QUERY; page++) {
-        if (isCancelled && isCancelled()) return seen.size;
-        const text = await run(async () => {
-          const resp = await doFetch(buildSearchUrl(view, q, PAGE_SIZE, page * PAGE_SIZE), { credentials: "include" });
-          if (!resp.ok) throw new Error(`Google search HTTP ${resp.status}`);
-          return resp.text();
-        });
-        const records = parseSearchResponse(text);
-        if (records.length) parsedAny = true;
-        const fresh = [];
-        for (const rec of records) {
-          const key = rec.placeId || `${rec.name}@${rec.latitude.toFixed(5)},${rec.longitude.toFixed(5)}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          if (isWantedFoodPlace(rec.categories) && inView(rec.latitude, rec.longitude, view)) {
-            fresh.push(toPlace(rec));
-          }
+    const lister = { done: false, seen: 0 };
+
+    async function fetchNextPage() {
+      const query = QUERIES[q];
+      const offset = page * PAGE_SIZE;
+      const text = await run(async () => {
+        const resp = await doFetch(buildSearchUrl(view, query, PAGE_SIZE, offset), { credentials: "include" });
+        if (!resp.ok) throw new Error(`Google search HTTP ${resp.status}`);
+        return resp.text();
+      });
+      const records = parseSearchResponse(text);
+      if (records.length) parsedAny = true;
+      for (const rec of records) {
+        const key = rec.placeId || `${rec.name}@${rec.latitude.toFixed(5)},${rec.longitude.toFixed(5)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (isWantedFoodPlace(rec.categories) && inView(rec.latitude, rec.longitude, view)) {
+          buffer.push(toPlace(rec));
         }
-        if (fresh.length && onPlaces) onPlaces(fresh);
-        if (records.length < PAGE_SIZE) break; // last page
       }
+      lister.seen = seen.size;
+      page++;
+      if (records.length < PAGE_SIZE || page >= MAX_PAGES_PER_QUERY) {
+        q++;
+        page = 0;
+      }
+      if (q >= QUERIES.length) lister.done = true;
     }
-    if (!parsedAny) throw new Error("Google search returned no places (format changed?)");
-    return seen.size;
+
+    lister.next = async function next(n, isCancelled) {
+      while (buffer.length < n && !lister.done) {
+        if (isCancelled && isCancelled()) break;
+        await fetchNextPage();
+      }
+      if (lister.done && !parsedAny) throw new Error("Google search returned no places (format changed?)");
+      const batch = buffer.splice(0, n);
+      const d = (p) => Math.hypot(viewPoint(p.latitude, p.longitude, view).x - view.w / 2,
+        viewPoint(p.latitude, p.longitude, view).y - view.h / 2);
+      batch.sort((a, b) => d(a) - d(b));
+      if (lister.done && buffer.length === 0) lister.exhausted = true;
+      return batch;
+    };
+    lister.exhausted = false;
+    return lister;
+  }
+
+  /** Same map window? (small pans / no zoom change keep the exploration) */
+  function sameView(a, b) {
+    if (!a || !b || Math.abs(a.zoom - b.zoom) > 0.3) return false;
+    const p = viewPoint(b.lat, b.lng, a);
+    return Math.hypot(p.x - a.w / 2, p.y - a.h / 2) < 0.25 * Math.min(a.w, a.h);
   }
 
   // ---- place details (for the fried-food judgement) ----
@@ -350,7 +381,8 @@
     streetPrefixFromAddress,
     englishName,
     toPlace,
-    fetchWindowPlaces,
+    createWindowLister,
+    sameView,
     fetchPlaceDetail,
     createRateLimiter,
   };

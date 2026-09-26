@@ -97,36 +97,54 @@ test('search request: Google\'s own template, paged with !8i, no session ids', (
   assert.ok(Math.abs(places.viewAltitude(43.8045, 16, 375) - 2811.99) < 5);
 });
 
-test('fetchWindowPlaces pages through every query, streams new in-window places, no limit', async () => {
+test('window lister: 20 at a time, pages fetched only as needed, nearest first, resumable', async () => {
   const asked = [];
-  const many = Array.from({ length: 45 }, (_, i) => rec(100 + i, `R${i}`, 0.00002 * i, 0, ['Restaurant'], `${i} A St, T`));
-  const streamed = [];
-  const total = await places.fetchWindowPlaces(VIEW, {
-    fetchImpl: async (url) => {
-      const q = decodeURIComponent(url.split('&q=')[1]);
-      const off = Number((url.match(/!8i(\d+)/) || [0, 0])[1]);
-      asked.push(`${q}@${off}`);
-      let page = [];
-      if (q === 'restaurants') page = many.slice(off, off + 20);
-      if (q === 'fast food' && off === 0) {
-        page = [rec(100, 'R0', 0, 0, ['Restaurant'], '0 A St, T'), // already seen
-          rec(2, 'Fries', 0.0003, 0, ['Fast food restaurant'], '2 B St, T'),
-          rec(3, 'Coffee', 0.0003, 0, ['Coffee shop'], '3 B St, T'),
-          rec(4, 'Far', 0.03, 0, ['Restaurant'], '4 B St, T')];
-      }
-      return { ok: true, text: async () => body(page) };
-    },
-    onPlaces: (batch) => streamed.push(batch.map((p) => p.name)),
-  });
-  assert.deepEqual(asked, ['restaurants@0', 'restaurants@20', 'restaurants@40', 'fast food@0', 'food court@0']);
-  const names = streamed.flat();
-  assert.equal(names.length, 46, 'all 45 restaurants + Fries (no 20-place cap)');
-  assert.ok(names.includes('Fries') && !names.includes('Coffee') && !names.includes('Far'));
-  assert.equal(new Set(names).size, names.length, 'each place streamed once');
-  assert.equal(streamed.length, 4, 'one onPlaces call per page with new places');
-  assert.equal(total, 48, "unique results seen (incl. filtered ones)");
-  await assert.rejects(places.fetchWindowPlaces(VIEW, { fetchImpl: async () => ({ ok: true, text: async () => ")]}'\n[]" }) }),
-    /no places/, 'format change is reported');
+  // 45 restaurants spread north of the center (index = distance order), then fast food
+  const many = Array.from({ length: 45 }, (_, i) => rec(100 + i, `R${i}`, 0.00002 * (45 - i), 0, ['Restaurant'], `${i} A St, T`));
+  const fetchImpl = async (url) => {
+    const q = decodeURIComponent(url.split('&q=')[1]);
+    const off = Number((url.match(/!8i(\d+)/) || [0, 0])[1]);
+    asked.push(`${q}@${off}`);
+    let page = [];
+    if (q === 'restaurants') page = many.slice(off, off + 20);
+    if (q === 'fast food' && off === 0) {
+      page = [rec(100, 'R0', 0, 0, ['Restaurant'], '0 A St, T'), // already seen
+        rec(2, 'Fries', 0.0003, 0, ['Fast food restaurant'], '2 B St, T'),
+        rec(3, 'Coffee', 0.0003, 0, ['Coffee shop'], '3 B St, T'),
+        rec(4, 'Far', 0.03, 0, ['Restaurant'], '4 B St, T')];
+    }
+    return { ok: true, text: async () => body(page) };
+  };
+  const lister = places.createWindowLister(VIEW, { fetchImpl });
+
+  const b1 = await lister.next(20);
+  assert.deepEqual(asked, ['restaurants@0'], 'first batch: one result page only');
+  assert.equal(b1.length, 20);
+  assert.equal(b1[0].name, 'R19', 'nearest to the window center first');
+  assert.ok(!lister.exhausted);
+
+  const b2 = await lister.next(20);
+  assert.deepEqual(asked, ['restaurants@0', 'restaurants@20']);
+  assert.equal(b2.length, 20);
+
+  const b3 = await lister.next(20);
+  assert.deepEqual(b3.map((p) => p.name).sort(), ['Fries', 'R40', 'R41', 'R42', 'R43', 'R44'].sort(),
+    'rest of the window: no coffee, nothing outside the window, no repeats');
+  assert.equal(lister.exhausted, true);
+  assert.deepEqual(await lister.next(20), []);
+  const all = [...b1, ...b2, ...b3].map((p) => p.placeId);
+  assert.equal(new Set(all).size, all.length, 'each place returned once');
+
+  const empty = places.createWindowLister(VIEW, { fetchImpl: async () => ({ ok: true, text: async () => ")]}'\n[]" }) });
+  await assert.rejects(empty.next(20), /no places/, 'format change is reported');
+});
+
+test('sameView: small pans keep the exploration, a new area or zoom starts over', () => {
+  assert.ok(places.sameView(VIEW, { ...VIEW }));
+  assert.ok(places.sameView(VIEW, { ...VIEW, lng: VIEW.lng + 0.0005 }), '~40 px pan');
+  assert.ok(!places.sameView(VIEW, { ...VIEW, lng: VIEW.lng + 0.01 }), 'moved ~800 px');
+  assert.ok(!places.sameView(VIEW, { ...VIEW, zoom: 15 }), 'zoomed out');
+  assert.ok(!places.sameView(null, VIEW));
 });
 
 // ---------- google-places.js: details & rate limit ----------
@@ -394,6 +412,21 @@ test('jev reply parsing', () => {
   assert.equal(prob(null), null);
 });
 
+test('place tags: cached MIS match (login-gated) and cached fried verdict by place id', async () => {
+  const h = loadHandlers({ misHtml: `<table>${misRow('GO1', 'SEAFOOD PRINCESS', '3601 Victoria Park Ave')}</table>` });
+  await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  h.store.gce_fried_cache = { '0xa:0xa': { t: Date.now(), probability: 0.8 }, '0xf:0xf': { t: Date.now(), probability: 0.93 } };
+  const a = await h.run('handleGetPlaceTags', { placeId: '0xa:0xa' });
+  assert.deepEqual([a.customer.code, a.fried, a.probability], ['GO1', true, 0.8]);
+  const f = await h.run('handleGetPlaceTags', { placeId: '0xf:0xf' });
+  assert.deepEqual([f.customer, f.fried, f.probability], [null, true, 0.93]);
+  const none = await h.run('handleGetPlaceTags', { placeId: '0xz:0xz' });
+  assert.deepEqual([none.customer, none.fried], [null, false]);
+  h.state.loggedIn = false;
+  const out = await h.run('handleGetPlaceTags', { placeId: '0xa:0xa' });
+  assert.equal(out.customer, null, 'no customer data while logged out');
+});
+
 test('cache entries expire after 30 days and are capped', () => {
   const h = loadHandlers();
   const now = Date.now();
@@ -410,18 +443,39 @@ test('no third-party map data; explore handlers wired', () => {
     assert.ok(!JSON.stringify(manifest).toLowerCase().includes(s), `manifest mentions ${s}`);
   }
   assert.deepEqual(manifest.content_scripts.find((c) => c.js.includes('content.js')).js, ['google-places.js', 'content.js']);
-  for (const a of ['exploreMatchMis', 'exploreClassifyFried', 'exploreCancel']) assert.ok(source.includes(`"${a}"`), a);
+  for (const a of ['exploreMatchMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags']) assert.ok(source.includes(`"${a}"`), a);
   assert.ok(!source.includes('scanAndMatchMis'), 'old nearest-20 flow removed');
 });
 
-test('content.js: 探索 button, window snapshot, independent Google limiters, no auto modal', () => {
-  assert.match(content, /misLabel\.textContent = explore && !explore\.finished \? "探索中\.\.\." : "探索"/);
+test('content.js: batches of 20, lazy details, MIS and jev in parallel, derived pin state', () => {
+  assert.match(content, /EXPLORE_BATCH_SIZE = 20/);
+  assert.match(content, /lister\.next\(EXPLORE_BATCH_SIZE/);
+  assert.match(content, /text = "继续探索"/);
   assert.ok(!content.includes('匹配MIS'), 'button renamed');
   assert.match(content, /createRateLimiter\(1000\)/, 'detail pages 1/s');
   assert.match(content, /view,\s+\/\/ snapshot/);
-  const start = content.indexOf('async function handleExploreClick');
-  const end = content.indexOf('function setExploreButtonAuth');
-  assert.ok(!content.slice(start, end).includes('openMisModal'), 'no modal popup after exploring');
-  assert.match(content, /EXPLORE_RANK = \{ candidate: 0, fried: 1, mis: 2 \}/);
+  // details are fetched inside the per-place judgement, never for the list
+  const proc = content.slice(content.indexOf('async function exploreProcessPlace'), content.indexOf('async function runExploreBatch'));
+  assert.match(proc, /fetchPlaceDetail/);
+  assert.ok(!content.slice(content.indexOf('async function runExploreBatch'), content.indexOf('async function handleExploreClick')).includes('fetchPlaceDetail'));
+  // MIS is not awaited before the fried judgement starts, and neither skips the other
+  assert.match(proc, /await Promise\.allSettled\(\[mis, fried\]\)/);
+  assert.ok(!/entry\.state === "mis"/.test(proc), 'jev is not skipped because of MIS');
+  // pin colour is derived from both results (order-independent)
+  assert.match(content, /function exploreState\(entry\) \{\s+if \(entry\.customer\) return "mis";\s+if \(entry\.fried\) return "fried";\s+return "candidate";/);
+  assert.match(proc, /const live = \(\) => session === explore && !session\.cancelled/, 'stale results dropped');
+  const click = content.slice(content.indexOf('async function handleExploreClick'), content.indexOf('function setExploreButtonAuth'));
+  assert.ok(!click.includes('openMisModal'), 'no modal popup after exploring');
   assert.match(content, /function isOnRoute/);
+});
+
+test('content.js: one name tag, MIS签约 > 油炸, exact place id (no loose name/150 m matching)', () => {
+  assert.match(content, /const kind = info\?\.customer \? "mis" : info\?\.fried \? "fried" : ""/);
+  assert.match(content, /action: "getPlaceTags"/);
+  assert.ok(!content.includes('findMatchedMisCustomer'), 'old loose matcher removed');
+  assert.ok(!content.includes('< 0.15)'), 'no 150 m proximity match');
+  const css = fs.readFileSync(path.join(__dirname, '../content.css'), 'utf8');
+  assert.match(css, /\.greenoil-heading-tag \{[^}]*height: 20px/s);
+  assert.match(css, /\.greenoil-heading-tag\.is-mis/);
+  assert.match(css, /\.greenoil-heading-tag\.is-fried/);
 });

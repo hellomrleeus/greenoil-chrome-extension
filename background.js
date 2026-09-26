@@ -808,6 +808,22 @@ async function handleExploreClassifyFried(message) {
   return run;
 }
 
+/**
+ * Tags for a place page (name badge): cached MIS match (login-gated) and
+ * cached fried verdict. Same data as the 探索 pins, keyed by place id.
+ */
+async function handleGetPlaceTags(message) {
+  const placeId = typeof message.placeId === "string" ? message.placeId.slice(0, 80) : "";
+  if (!placeId) return { success: false };
+  const now = Date.now();
+  const fried = freshEntry((await readCache(FRIED_CACHE_KEY))[placeId], now);
+  let customer = null;
+  if ((await checkMisAuth(true)).loggedIn) {
+    customer = freshEntry((await readCache(MIS_CACHE_KEY))[placeId], now)?.customer || null;
+  }
+  return { success: true, customer, fried: Boolean(fried), probability: fried?.probability ?? null };
+}
+
 // Runtime Message Dispatcher
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
@@ -1066,6 +1082,10 @@ function isPlaceMatch(w, q) {
       }
       if (message.action === "exploreClassifyFried") {
         sendResponse(await handleExploreClassifyFried(message));
+        return;
+      }
+      if (message.action === "getPlaceTags") {
+        sendResponse(await handleGetPlaceTags(message));
         return;
       }
       if (message.action === "exploreCancel") {
