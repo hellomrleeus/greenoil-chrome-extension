@@ -121,8 +121,8 @@ if (window.__greenoil_injected__) {
           if (misContainer && misBtn) {
             if (isMisLoggedIn) {
               misContainer.classList.remove("greenoil-mis-disabled");
-              misContainer.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-              misBtn.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+              misContainer.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+              misBtn.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
               misBtn.setAttribute("aria-label", "匹配MIS");
             } else {
               misContainer.classList.add("greenoil-mis-disabled");
@@ -740,8 +740,8 @@ if (window.__greenoil_injected__) {
         isMisLoggedIn = Boolean(auth.loggedIn);
         if (isMisLoggedIn) {
           container.classList.remove("greenoil-mis-disabled");
-          container.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-          btn.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+          container.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+          btn.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
           btn.setAttribute("aria-label", "匹配MIS");
         } else {
           container.classList.add("greenoil-mis-disabled");
@@ -753,6 +753,27 @@ if (window.__greenoil_injected__) {
     } catch (e) {
       container.dataset.authDebug = "exception: " + e.message;
     }
+  }
+
+  // The visible map window: URL camera (Google's full-canvas center), canvas
+  // size, and the side panel rect so places hidden under it are skipped.
+  function currentMapView(place) {
+    const m = location.href.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(\d+(?:\.\d+)?)z/);
+    const canvas = mapCanvas();
+    const w = canvas?.clientWidth || window.innerWidth;
+    const h = canvas?.clientHeight || window.innerHeight;
+    const view = m
+      ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: parseFloat(m[3]), w, h }
+      : { lat: place.latitude, lng: place.longitude, zoom: 16, w, h };
+    const panel = document.querySelector('div[role="main"]');
+    if (canvas && panel) {
+      const c = canvas.getBoundingClientRect();
+      const p = panel.getBoundingClientRect();
+      if (p.width > 50 && p.height > 50) {
+        view.hidden = [{ left: p.left - c.left, top: p.top - c.top, width: p.width, height: p.height }];
+      }
+    }
+    return view;
   }
 
   async function handleMisBtnClick(container, circle, label, forceRefresh = false) {
@@ -767,10 +788,10 @@ if (window.__greenoil_injected__) {
       if (liveAuth && liveAuth.loggedIn) {
         isMisLoggedIn = true;
         container.classList.remove("greenoil-mis-disabled");
-        container.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+        container.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
         const b = container.querySelector("button");
         if (b) {
-          b.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+          b.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
           b.setAttribute("aria-label", "匹配MIS");
         }
       } else {
@@ -789,7 +810,7 @@ if (window.__greenoil_injected__) {
     circle.innerHTML = SVG_SPINNER;
     container.classList.add("greenoil-loading");
     label.textContent = "匹配中...";
-    showToast("透视扫描中", `正在静默扫描 ${latestPlace.name} 最近 20 家餐馆/快餐/食堂并匹配 MIS...`);
+    showToast("透视扫描中", `正在扫描当前地图窗口内距 ${latestPlace.name} 最近的 20 家餐馆/快餐/食堂并匹配 MIS...`);
 
     try {
       if (!chrome.runtime?.id) {
@@ -800,12 +821,30 @@ if (window.__greenoil_injected__) {
         return;
       }
 
+      // Nearby places come from Google Maps itself, for the current window.
+      let candidates;
+      try {
+        candidates = await window.__greenoil_places.fetchWindowFoodPlaces(
+          currentMapView(latestPlace),
+          { lat: latestPlace.latitude, lng: latestPlace.longitude },
+          20
+        );
+      } catch (err) {
+        console.warn("[GreenOil] Google nearby search failed:", err);
+        circle.innerHTML = SVG_MIS_SHIELD;
+        container.classList.remove("greenoil-loading");
+        label.textContent = "匹配MIS";
+        showToast("获取周边餐馆失败", "无法读取 Google 地图当前窗口的餐馆，请稍后重试", false);
+        return;
+      }
+
       chrome.runtime.sendMessage({
         action: "scanAndMatchMis",
         lat: latestPlace.latitude,
         lng: latestPlace.longitude,
         placeName: latestPlace.name,
         placeAddress: latestPlace.address,
+        candidates,
         forceRefresh
       }, (resp) => {
         circle.innerHTML = SVG_MIS_SHIELD;
@@ -1381,7 +1420,7 @@ if (window.__greenoil_injected__) {
       misBtn.className = "S9kvJb greenoil-action-btn";
       misBtn.type = "button";
       misBtn.setAttribute("aria-label", "匹配MIS");
-      misBtn.title = "扫描最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+      misBtn.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
 
       const misCircle = document.createElement("span");
       misCircle.className = "DVeyrd greenoil-action-circle greenoil-mis-circle";

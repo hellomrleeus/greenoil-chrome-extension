@@ -39,7 +39,7 @@
         "https://*.google.com.tw/maps*",
         "https://*.google.co.jp/maps*"
       ],
-      "js": ["content.js"],
+      "js": ["google-places.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     },
@@ -66,9 +66,6 @@
     "https://*.google.co.jp/maps*",
     "https://greenoil-api.ydxhjw4j5w.workers.dev/*",
     "*://*.greenoilinc.com/*",
-    "*://greenoilinc.com/*",
-    "https://overpass-api.de/*",
-    "https://maps.mail.ru/*",
-    "https://nominatim.openstreetmap.org/*"
+    "*://greenoilinc.com/*"
   ]
 }

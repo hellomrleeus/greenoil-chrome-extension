@@ -205,7 +205,7 @@ async function ensureMapsContentScript(tabId) {
     });
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content.js"]
+      files: ["google-places.js", "content.js"]
     });
   } catch (error) {
     console.warn("[GreenOil] Unable to ensure Maps content script:", error);
@@ -349,15 +349,13 @@ async function rateLimitMisRequest() {
   _lastMisRequestTime = Date.now();
 }
 
-// ---- Local result caches (chrome.storage.local) ----
+// ---- Local MIS result cache (chrome.storage.local) ----
 // MIS customer records are company data: they are only read while the MIS
 // login is valid and are wiped as soon as a logout is detected (see
-// checkMisAuth). Nearby OSM places are public data and survive logouts.
+// checkMisAuth).
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MIS_CACHE_KEY = "gce_mis_cache";          // {keyword: {t, records}}
-const NEARBY_CACHE_KEY = "gce_nearby_cache";    // {"lat,lng": {t, places}}
 const MIS_CACHE_MAX = 3000;
-const NEARBY_CACHE_MAX = 300;
 
 async function readCache(key) {
   const data = await chrome.storage.local.get(key);
@@ -376,11 +374,6 @@ function pruneCache(map, max, now) {
       .sort((a, b) => b[1].t - a[1].t)
       .slice(0, max)
   );
-}
-
-// Same place ≈ same 4-decimal coordinates (~11 m).
-function nearbyCacheKey(lat, lng) {
-  return `${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
 
 async function clearMisCache() {
@@ -459,189 +452,46 @@ function extractStreetPrefix(raw) {
   return part;
 }
 
-// ---- Nearby food places (OpenStreetMap) ----
-// Nominatim cannot sort by distance (it ranks by relevance and caps the
-// result count), so "nearest N" comes primarily from Overpass: fetch every
-// matching POI inside a radius, sort by true distance, keep the first N,
-// widening the radius until there are enough. Public Overpass instances
-// are often overloaded, so Nominatim category searches over widening
-// boxes (again sorted by distance) are the fallback.
+// ---- Nearby food places ----
+// Collected in the Maps page from Google Maps itself (google-places.js) for
+// the current map window and sent with the scanAndMatchMis message.
 
-const OVERPASS_ENDPOINTS = [
-  "https://overpass-api.de/api/interpreter",
-  "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
-];
-const NEARBY_RADII_M = [1000, 3000, 6000];
-// Restaurants, fast food, food courts and canteens. Cafés (amenity=cafe)
-// and bakeries (shop=bakery) are different tags and never selected.
-const NEARBY_AMENITIES = "restaurant|fast_food|food_court|canteen";
-// ...but some cafés/bakeries are tagged restaurant/fast_food with a cuisine.
-const EXCLUDED_CUISINE_RE = /^(coffee_shop|coffee|cafe|bakery|cake|pastry|donut|doughnut|cookie|cookies)$/i;
-const NOMINATIM_QUERIES = ["restaurant", "fast food", "food court"];
-const NOMINATIM_BOXES_DEG = [0.006, 0.012, 0.025, 0.05]; // half-height in latitude
-const OSM_USER_AGENT = "GreenOilChromeExt/1.0"; // Overpass/Nominatim reject anonymous clients
+const MAX_CANDIDATES = 60;
 
-function buildOverpassQuery(lat, lng, radiusM) {
-  return `[out:json][timeout:25];` +
-    `nwr["amenity"~"^(${NEARBY_AMENITIES})$"]["name"](around:${radiusM},${lat},${lng});` +
-    `out center tags;`;
+// English store name: the whole name if Latin, else its longest Latin run.
+function englishName(name) {
+  const n = String(name || "").replace(/’/g, "'").replace(/\s+/g, " ").trim();
+  if (n.length >= 3 && /^[\x20-\x7EÀ-ɏ]+$/.test(n) && /[A-Za-z]/.test(n)) return n;
+  const runs = n.match(/[A-Za-zÀ-ɏ][A-Za-z0-9À-ɏ '&.-]*[A-Za-z0-9.]/g) || [];
+  const best = runs.map(r => r.trim()).sort((a, b) => b.length - a.length)[0] || "";
+  return best.replace(/[^A-Za-z]/g, "").length >= 4 ? best : "";
 }
 
-function isExcludedCuisine(cuisine) {
-  return String(cuisine || "")
-    .split(/[;,]/)
-    .some(c => EXCLUDED_CUISINE_RE.test(c.trim()));
-}
-
-// English store name: name:en, else name when it is written in Latin script.
-function englishName(tags) {
-  const latin = /^[\x20-\x7EÀ-ɏ’]+$/;
-  for (const v of [tags["name:en"], tags.name]) {
-    const n = String(v || "").replace(/’/g, "'").replace(/\s+/g, " ").trim();
-    if (n.length >= 3 && latin.test(n) && /[A-Za-z]/.test(n)) return n;
-  }
-  return "";
-}
-
-/**
- * OSM tags + position -> candidate, or null when excluded.
- * Candidate: {name, englishName, houseNumber, street, streetPrefix,
- *             displayName, latitude, longitude, distanceKm}
- */
-function toFoodCandidate(tags, plat, plng, lat, lng) {
-  if (!tags || !tags.name || !Number.isFinite(plat) || !Number.isFinite(plng)) return null;
-  if (isExcludedCuisine(tags.cuisine)) return null;
-  const houseNumber = String(tags["addr:housenumber"] || "").trim();
-  const street = String(tags["addr:street"] || "").trim();
-  return {
-    name: tags.name,
-    englishName: englishName(tags),
-    houseNumber,
-    street,
-    streetPrefix: houseNumber && street ? `${houseNumber} ${street}` : "",
-    displayName: [houseNumber, street, tags["addr:city"]].filter(Boolean).join(" "),
-    latitude: plat,
-    longitude: plng,
-    distanceKm: getHaversineDistKm(lat, lng, plat, plng)
-  };
-}
-
-/** Sort nearest first; drop duplicates (same name within 30 m). */
-function nearestUnique(cands) {
-  const sorted = cands.filter(Boolean).sort((a, b) => a.distanceKm - b.distanceKm);
-  return sorted.filter((c, i) => !sorted.slice(0, i).some(p =>
-    p.name.toLowerCase() === c.name.toLowerCase() &&
-    getHaversineDistKm(p.latitude, p.longitude, c.latitude, c.longitude) < 0.03));
-}
-
-function parseOverpassFood(elements, lat, lng) {
-  return nearestUnique((elements || []).map(el =>
-    toFoodCandidate(el.tags, el.lat ?? el.center?.lat, el.lon ?? el.center?.lon, lat, lng)));
-}
-
-function parseNominatimFood(results, lat, lng) {
-  return nearestUnique((results || []).map(d => {
-    const a = d.address || {};
-    const n = d.namedetails || {};
-    const x = d.extratags || {};
-    return toFoodCandidate({
-      name: d.name || n.name,
-      "name:en": n["name:en"],
-      cuisine: x.cuisine,
-      "addr:housenumber": a.house_number,
-      "addr:street": a.road,
-      "addr:city": a.city || a.town
-    }, parseFloat(d.lat), parseFloat(d.lon), lat, lng);
+/** Candidates arrive from the page: keep only well-formed ones. */
+function sanitizeCandidates(list) {
+  if (!Array.isArray(list)) return [];
+  const str = (v, max = 200) => (typeof v === "string" ? v.slice(0, max) : "");
+  return list.slice(0, MAX_CANDIDATES).filter(c =>
+    c && typeof c.name === "string" && Number.isFinite(c.latitude) && Number.isFinite(c.longitude)
+  ).map(c => ({
+    name: str(c.name),
+    englishName: str(c.englishName),
+    street: str(c.street),
+    streetPrefix: str(c.streetPrefix),
+    displayName: str(c.displayName, 300),
+    category: str(c.category),
+    placeId: str(c.placeId, 80),
+    latitude: c.latitude,
+    longitude: c.longitude,
+    distanceKm: Number.isFinite(c.distanceKm) ? c.distanceKm : 0
   }));
-}
-
-async function overpassFetch(query) {
-  let lastErr = null;
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        body: new URLSearchParams({ data: query }),
-        headers: { "User-Agent": OSM_USER_AGENT },
-        signal: AbortSignal.timeout(12000)
-      });
-      if (resp.ok) return (await resp.json()).elements || [];
-      lastErr = new Error(`Overpass HTTP ${resp.status}`);
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw lastErr || new Error("Overpass unavailable");
-}
-
-async function nearbyViaOverpass(lat, lng, limit) {
-  let found = null;
-  for (const radius of NEARBY_RADII_M) {
-    try {
-      found = parseOverpassFood(await overpassFetch(buildOverpassQuery(lat, lng, radius)), lat, lng);
-    } catch (err) {
-      console.warn(`[GreenOil MIS] Overpass (${radius} m) failed:`, err);
-      break; // keep what a smaller radius already found
-    }
-    if (found.length >= limit) break;
-  }
-  return found; // null = Overpass unusable
-}
-
-let _lastNominatimAt = 0;
-async function nominatimSearch(q, lat, lng, halfLat) {
-  // Nominatim usage policy: at most 1 request per second.
-  const wait = _lastNominatimAt + 1100 - Date.now();
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  _lastNominatimAt = Date.now();
-  const halfLng = halfLat / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
-  const params = new URLSearchParams({
-    q, format: "jsonv2", addressdetails: "1", extratags: "1", namedetails: "1",
-    bounded: "1", limit: "40",
-    viewbox: [lng - halfLng, lat + halfLat, lng + halfLng, lat - halfLat].map(v => v.toFixed(5)).join(",")
-  });
-  const resp = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
-    headers: { "User-Agent": OSM_USER_AGENT },
-    signal: AbortSignal.timeout(15000)
-  });
-  return resp.ok ? resp.json() : [];
-}
-
-async function nearbyViaNominatim(lat, lng, limit) {
-  let found = [];
-  for (const half of NOMINATIM_BOXES_DEG) {
-    const results = [];
-    for (const q of NOMINATIM_QUERIES) {
-      try {
-        results.push(...await nominatimSearch(q, lat, lng, half));
-      } catch (err) {
-        console.warn(`[GreenOil MIS] Nominatim "${q}" failed:`, err);
-      }
-    }
-    found = parseNominatimFood(results, lat, lng);
-    if (found.length >= limit) break;
-  }
-  return found;
-}
-
-/**
- * The `limit` nearest restaurants / fast food / food courts / canteens
- * around (lat, lng), nearest first. Cafés and bakeries excluded.
- */
-async function fetchNearbyRestaurants(lat, lng, limit = 20) {
-  let found = await nearbyViaOverpass(lat, lng, limit);
-  if (!found || found.length < limit) {
-    const fallback = await nearbyViaNominatim(lat, lng, limit);
-    if (!found || fallback.length > found.length) found = fallback;
-  }
-  return found.slice(0, limit);
 }
 
 // ---- MIS query planning ----
 // Places with a house number are searched by "number + street"; places
 // without one by their English name. A name search on a chain ("Subway")
 // returns every branch, so its hits are narrowed to the same street when
-// OSM knows it, and otherwise only accepted when unambiguous.
+// the place has one, and otherwise only accepted when unambiguous.
 
 const NAME_MATCH_MAX_HITS = 3;
 
@@ -782,18 +632,8 @@ async function handleScanAndMatchMis(param, sender) {
 
   const now = Date.now();
 
-  // 2. The 20 nearest restaurants / fast food / food courts / canteens
-  //    (cached per place; Shift+click forces a refresh)
-  const nearbyCache = await readCache(NEARBY_CACHE_KEY);
-  const nearbyKey = nearbyCacheKey(lat, lng);
-  const cachedNearby = !forceRefresh && freshEntry(nearbyCache[nearbyKey], now);
-  const nearbyRestaurants = cachedNearby
-    ? cachedNearby.places
-    : await fetchNearbyRestaurants(lat, lng, 20);
-  if (!cachedNearby && nearbyRestaurants.length > 0) {
-    nearbyCache[nearbyKey] = { t: now, places: nearbyRestaurants };
-    await chrome.storage.local.set({ [NEARBY_CACHE_KEY]: pruneCache(nearbyCache, NEARBY_CACHE_MAX, now) });
-  }
+  // 2. The nearest places in the current Google Maps window (from the page)
+  const nearbyRestaurants = sanitizeCandidates(param.candidates);
 
   // 3. Candidates: the clicked place first, then the nearby places
   const candidates = [];
@@ -801,7 +641,7 @@ async function handleScanAndMatchMis(param, sender) {
     const prefix = extractStreetPrefix(placeAddress);
     candidates.push({
       name: placeName,
-      englishName: englishName({ name: placeName }),
+      englishName: englishName(placeName),
       street: prefix.replace(/^\d+[\w-]*\s+/, ""),
       streetPrefix: /^\d/.test(prefix) ? prefix : "",
       displayName: placeAddress,
@@ -903,7 +743,6 @@ async function handleScanAndMatchMis(param, sender) {
     totalScanned: candidates.length,
     totalQueries: totalPrefixes,
     cachedQueries,
-    nearbyFromCache: Boolean(cachedNearby),
     activeRoute
   };
 }
