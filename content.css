@@ -250,143 +250,7 @@
   to { transform: rotate(360deg); }
 }
 
-/* ===================================================
-   Google Maps Pins Overlay Layer
-   =================================================== */
-
-#greenoil-pins-overlay {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  pointer-events: none;
-  z-index: 999;
-  overflow: hidden;
-}
-
-.greenoil-map-pin {
-  position: absolute;
-  pointer-events: auto;
-  cursor: pointer;
-  transform: translate(-50%, -100%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  user-select: none;
-  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
-  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.35));
-}
-
-.greenoil-map-pin:hover {
-  transform: translate(-50%, -108%) scale(1.12);
-  z-index: 1002 !important;
-}
-
-/* Waypoint Pin (#1, #2, #3...) */
-.greenoil-waypoint-pin .greenoil-pin-marker {
-  position: relative;
-  width: 30px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.greenoil-waypoint-pin .greenoil-pin-svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-.greenoil-waypoint-pin .greenoil-pin-number {
-  position: absolute;
-  top: 9px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
-  text-align: center;
-}
-
-/* MIS Contracted Pin */
-.greenoil-mis-pin .greenoil-mis-pin-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 4px 7px;
-  background: linear-gradient(135deg, #278a53 0%, #1e6b40 100%);
-  color: #ffffff;
-  border: 1.5px solid #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-}
-
-.greenoil-mis-pin-badge svg {
-  width: 13px;
-  height: 13px;
-  fill: currentColor;
-}
-
-/* Radar pulse animation for newly matched MIS pins */
-.greenoil-pin-radar-ring {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 28px;
-  height: 28px;
-  margin-top: -14px;
-  margin-left: -14px;
-  border-radius: 50%;
-  border: 2px solid #10b981;
-  pointer-events: none;
-  animation: greenoil-radar-pulse 2s ease-out infinite;
-}
-
-@keyframes greenoil-radar-pulse {
-  0% {
-    transform: scale(0.6);
-    opacity: 0.9;
-  }
-  100% {
-    transform: scale(2.2);
-    opacity: 0;
-  }
-}
-
-/* Pin Hover Tooltip */
-.greenoil-pin-tooltip {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: #1f2937;
-  color: #ffffff;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  transform: translate(-50%, 4px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-  z-index: 1005;
-}
-
-.greenoil-map-pin:hover .greenoil-pin-tooltip {
-  opacity: 1;
-  transform: translate(-50%, 0);
-}
-
-/* Floating Pins Stats / Filter Controller */
+/* MIS Contracted Customer Floating Indicator */
 #greenoil-pins-control-bar {
   position: fixed;
   bottom: 24px;
@@ -415,12 +279,6 @@
   cursor: pointer;
   border: 1px solid transparent;
   transition: all 0.15s ease;
-}
-
-.greenoil-control-pill.waypoint-pill {
-  background: #ecfdf5;
-  color: #065f46;
-  border-color: #a7f3d0;
 }
 
 .greenoil-control-pill.mis-pill {
@@ -710,6 +568,93 @@
   width: 14px;
   height: 14px;
   fill: currentColor;
+}
+
+/* ===================================================
+   Native-aligned Waypoint Pins on Map Canvas
+   (100% Zero-Latency Drag Tracking & 0 Click Interception)
+   =================================================== */
+
+#greenoil-waypoint-pins-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  pointer-events: none !important;
+  z-index: 998 !important;
+  overflow: hidden !important;
+  user-select: none !important;
+}
+
+#greenoil-waypoint-pin-layer {
+  position: absolute !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  will-change: transform !important;
+  transform: translate3d(0, 0, 0);
+}
+
+.greenoil-waypoint-map-pin {
+  position: absolute !important;
+  width: 32px !important;
+  height: 42px !important;
+  transform: translate(-50%, -100%) !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  will-change: transform, left, top !important;
+  transition: opacity 0.15s ease !important;
+}
+
+.greenoil-pin-body {
+  position: relative !important;
+  width: 30px !important;
+  height: 38px !important;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4)) !important;
+  pointer-events: none !important;
+}
+
+.greenoil-pin-svg {
+  width: 30px !important;
+  height: 38px !important;
+  display: block !important;
+  pointer-events: none !important;
+}
+
+.greenoil-pin-num {
+  position: absolute !important;
+  top: 5px !important;
+  left: 0 !important;
+  width: 30px !important;
+  text-align: center !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Google Sans", sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  color: var(--pin-color, #059669) !important;
+  line-height: 18px !important;
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+.greenoil-pin-tooltip {
+  margin-top: 2px !important;
+  padding: 2px 6px !important;
+  background: rgba(17, 24, 39, 0.85) !important;
+  backdrop-filter: blur(2px) !important;
+  color: #ffffff !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  border-radius: 4px !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2) !important;
+  max-width: 140px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }
 
 /* ===================================================

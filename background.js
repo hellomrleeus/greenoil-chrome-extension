@@ -145,13 +145,6 @@ chrome.runtime.onInstalled.addListener(async () => {
   try {
     await getOrInitColorRoutes();
     await updateBadge();
-    const mapTabs = await chrome.tabs.query({ url: ["*://*.google.com/maps/*", "*://*.google.ca/maps/*"] });
-    for (const t of mapTabs) {
-      if (t.id) {
-        chrome.scripting.insertCSS({ target: { tabId: t.id }, files: ["content.css"] }).catch(() => {});
-        chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }).catch(() => {});
-      }
-    }
   } catch (e) {
     console.warn("onInstalled error:", e);
   }
@@ -165,29 +158,62 @@ chrome.runtime.onStartup.addListener(async () => {
   }
 });
 
-/**
- * Automatically inject content scripts on Google Maps when page completes loading
- * Completely decoupled from initial navigation to guarantee 100% native load speed.
- */
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  const url = tab?.url || changeInfo?.url || "";
-  if (!url || (!url.includes("google.com/maps") && !url.includes("google.ca/maps"))) return;
+const GOOGLE_MAPS_URL_PATTERNS = [
+  "https://google.com/maps/*",
+  "https://www.google.com/maps/*",
+  "https://google.ca/maps/*",
+  "https://www.google.ca/maps/*"
+];
 
-  if (changeInfo.status === "complete" || (changeInfo.url && changeInfo.url.includes("/place/"))) {
-    try {
-      await chrome.scripting.insertCSS({
-        target: { tabId },
-        files: ["content.css"]
-      });
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"]
-      });
-    } catch (e) {
-      // Ignored if tab closed/navigated
-    }
+function isGoogleMapsUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return ["google.com", "www.google.com", "google.ca", "www.google.ca"].includes(parsed.hostname)
+      && parsed.pathname.startsWith("/maps/");
+  } catch (_) {
+    return false;
+  }
+}
+
+async function ensureMapsContentScript(tabId) {
+  try {
+    const [{ result: alreadyInjected = false } = {}] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => Boolean(
+        window.__greenoil_injected__ &&
+        chrome.runtime?.id &&
+        document.documentElement.getAttribute("data-greenoil-owner")
+      )
+    });
+    if (alreadyInjected) return;
+
+    await chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ["content.css"]
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"]
+    });
+  } catch (error) {
+    console.warn("[GreenOil] Unable to ensure Maps content script:", error);
+  }
+}
+
+// Manifest injection remains the normal path. This only repairs pages that were
+// already open when the unpacked extension was reloaded or where Chrome skipped
+// the declarative injection during a Maps navigation.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && isGoogleMapsUrl(tab.url)) {
+    ensureMapsContentScript(tabId);
   }
 });
+
+chrome.tabs.query({ url: GOOGLE_MAPS_URL_PATTERNS }).then((tabs) => {
+  for (const tab of tabs) {
+    if (tab.id && isGoogleMapsUrl(tab.url)) ensureMapsContentScript(tab.id);
+  }
+}).catch(() => {});
 
 /**
  * Smoothly pan Google Maps to a waypoint location without page refresh
@@ -250,21 +276,31 @@ async function handlePanToWaypoint(wp) {
     return { success: true, createdNewTab: true };
   }
 
-  // 2. Perform smooth in-page navigation without reloading
+  // 1. First try smooth in-page pan via message to content script
+  try {
+    const res = await chrome.tabs.sendMessage(targetTab.id, {
+      action: "panToLocation",
+      targetPath,
+      waypoint: wp
+    });
+    if (res !== undefined) {
+      return { success: true, panned: true };
+    }
+  } catch (_) {}
+
+  // 2. Fallback: Execute in-page click script directly in tab
   try {
     await chrome.scripting.executeScript({
       target: { tabId: targetTab.id },
-      world: "MAIN",
-      func: (urlPath, placeName) => {
+      func: (path, name) => {
         try {
-          // Push state and dispatch popstate to trigger Google Maps native SPA flyTo / panTo
-          history.pushState(null, "", urlPath);
-          window.dispatchEvent(new PopStateEvent("popstate"));
-
-          // If search input exists, sync its value smoothly as well
-          const searchInput = document.querySelector('input[name="q"]');
-          if (searchInput && placeName) {
-            searchInput.value = placeName;
+          if (path) {
+            const a = document.createElement("a");
+            a.href = path;
+            a.style.display = "none";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
           }
           return { success: true };
         } catch (e) {
@@ -273,28 +309,19 @@ async function handlePanToWaypoint(wp) {
       },
       args: [targetPath, wp.name || ""]
     });
-
-    // Notify content script to display toast and refresh button state
-    chrome.tabs.sendMessage(targetTab.id, {
-      action: "didPanToWaypoint",
-      waypoint: wp
-    }).catch(() => {});
-
     return { success: true, panned: true };
   } catch (err) {
-    console.error("ExecuteScript pan failed:", err);
-    // Fallback: send message to content script
-    try {
-      await chrome.tabs.sendMessage(targetTab.id, {
-        action: "panToLocation",
-        targetPath,
-        waypoint: wp
-      });
-      return { success: true, fallback: true };
-    } catch (e2) {
-      return { success: false, error: err.message };
-    }
+    console.warn("[GreenOil] In-page script failed, falling back to tab update:", err);
   }
+
+  // 3. Last resort fallback: Hard tab navigation
+  const destination = new URL(targetPath, "https://www.google.com");
+  if (!/^www\.google\.(com|ca)$/.test(destination.hostname) ||
+      destination.protocol !== "https:" || !destination.pathname.startsWith("/maps/")) {
+    return { success: false, error: "无效的 Google Maps 地址" };
+  }
+  await chrome.tabs.update(targetTab.id, { url: destination.href, active: true });
+  return { success: true, navigated: true };
 }
 
 // ==========================================
@@ -323,52 +350,43 @@ async function rateLimitMisRequest() {
  */
 async function checkMisAuth(force = false) {
   const now = Date.now();
-  if (!force && (now - _cachedMisAuth.checkedAt < 40000)) {
+  if (!force && (now - _cachedMisAuth.checkedAt < 5000)) {
     return _cachedMisAuth;
   }
 
   try {
-    const phpsessid = await chrome.cookies.get({
-      url: "https://mis.greenoilinc.com",
-      name: "PHPSESSID"
-    });
-    const logcheck = await chrome.cookies.get({
-      url: "https://mis.greenoilinc.com",
-      name: "LOGCHECK"
-    });
+    const cookies = await chrome.cookies.getAll({ domain: "mis.greenoilinc.com" }).catch(() => []);
+    const logcheckCookie = cookies.find(c => c.name === "LOGCHECK");
+    const phpsessidCookie = cookies.find(c => c.name === "PHPSESSID");
 
-    if (!phpsessid || !phpsessid.value || !logcheck || logcheck.value !== "1") {
-      _cachedMisAuth = { loggedIn: false, checkedAt: now };
-      return _cachedMisAuth;
-    }
+    const isAuthed = Boolean(logcheckCookie && logcheckCookie.value === "1");
 
-    // Fast probe request to verify login session validity (throttled to 1s/req)
-    await rateLimitMisRequest();
-    const probeRes = await fetch("https://mis.greenoilinc.com/index_intranet.php?view=customer_list&page=1&key_word=__probe__", {
-      method: "GET",
-      credentials: "include"
-    });
-
-    if (!probeRes.ok) {
-      _cachedMisAuth = { loggedIn: false, checkedAt: now };
-      return _cachedMisAuth;
-    }
-
-    const html = await probeRes.text();
-    if (probeRes.url.includes("login_intranet") || html.includes("login_intranet.php") || (html.includes('name="m_userid"') && html.includes('name="m_pwd"'))) {
-      _cachedMisAuth = { loggedIn: false, checkedAt: now };
-      return _cachedMisAuth;
-    }
-
-    const isValid = html.includes("customer_list") || html.includes("customer-info-detail") || html.includes("tb-list") || html.includes("search-container");
-    _cachedMisAuth = { loggedIn: isValid, checkedAt: now };
+    _cachedMisAuth = {
+      loggedIn: isAuthed,
+      checkedAt: now,
+      logcheck: logcheckCookie?.value || "",
+      hasPhpsessid: Boolean(phpsessidCookie?.value)
+    };
     return _cachedMisAuth;
   } catch (err) {
     console.warn("[GreenOil MIS] checkMisAuth error:", err);
-    _cachedMisAuth = { loggedIn: false, checkedAt: now };
+    _cachedMisAuth = { loggedIn: false, checkedAt: now, error: err.message };
     return _cachedMisAuth;
   }
 }
+
+// Real-time cookie listener: Broadcast auth state changes to all Maps tabs
+chrome.cookies.onChanged.addListener((changeInfo) => {
+  const dom = changeInfo.cookie?.domain || "";
+  if (dom.includes("greenoilinc.com")) {
+    _cachedMisAuth = { loggedIn: false, checkedAt: 0 };
+    checkMisAuth(true).then((auth) => {
+      chrome.tabs.query({ url: ["https://*.google.com/maps/*", "https://*.google.ca/maps/*"] }, (tabs) => {
+        tabs.forEach(t => chrome.tabs.sendMessage(t.id, { action: "misAuthChanged", auth }).catch(() => {}));
+      });
+    }).catch(() => {});
+  }
+});
 
 /**
  * Extract street address prefix for MIS matching, e.g. "3601 Victoria Park Ave"
@@ -410,6 +428,7 @@ async function fetchNearbyRestaurants(lat, lng, limit = 20) {
 
     const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=restaurant&viewbox=${minLng},${maxLat},${maxLng},${minLat}&bounded=1&limit=${limit}`;
     const resp = await fetch(url, {
+      signal: AbortSignal.timeout(15000),
       headers: {
         "User-Agent": "GreenOilChromeExt/1.0"
       }
@@ -441,7 +460,7 @@ async function fetchNearbyRestaurants(lat, lng, limit = 20) {
 
     // Fallback: search query near lat, lng
     const fbUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=restaurant+near+${lat},${lng}&limit=${limit}`;
-    const fbResp = await fetch(fbUrl, { headers: { "User-Agent": "GreenOilChromeExt/1.0" } });
+    const fbResp = await fetch(fbUrl, { signal: AbortSignal.timeout(15000), headers: { "User-Agent": "GreenOilChromeExt/1.0" } });
     if (fbResp.ok) {
       const fbData = await fbResp.json();
       if (Array.isArray(fbData)) {
@@ -523,6 +542,7 @@ async function queryMisPrefix(prefix, phpsessid) {
   try {
     const url = `https://mis.greenoilinc.com/index_intranet.php?view=customer_list&switched=&page=1&column=&sorting_type=&switch=&key_word=${encodeURIComponent(prefix.trim())}&cstatus=T&cistop=T`;
     const resp = await fetch(url, {
+      signal: AbortSignal.timeout(15000),
       method: "GET",
       credentials: "include"
     });
@@ -766,11 +786,15 @@ function isPlaceMatch(w, q) {
         }
 
         if (foundInRoute) {
+          const matchIdx = foundInRoute.waypoints.findIndex(w => isPlaceMatch(w, queryPlace));
           sendResponse({
             inRoute: true,
             belongRouteId: foundInRoute.id,
             belongRouteName: foundInRoute.name,
             belongTheme: foundInRoute,
+            stopIndex: matchIdx,
+            stopNumber: matchIdx >= 0 ? matchIdx + 1 : null,
+            waypoints: foundInRoute.waypoints,
             activeRouteId: activeId,
             activeTheme: activeRoute
           });
@@ -915,6 +939,33 @@ function isPlaceMatch(w, q) {
         } catch (err) {
           sendResponse({ success: false, error: err.message });
         }
+        return;
+      }
+
+      // 13. Update waypoint coordinates if more accurate ones are found
+      if (message.action === "updateWaypointCoordinates") {
+        const { name, latitude, longitude } = message;
+        if (name && typeof latitude === "number" && typeof longitude === "number") {
+          let updated = false;
+          for (const key of Object.keys(routes)) {
+            const r = routes[key];
+            if (Array.isArray(r.waypoints)) {
+              for (const wp of r.waypoints) {
+                if (wp.name === name || isPlaceMatch(wp, { name })) {
+                  wp.latitude = latitude;
+                  wp.longitude = longitude;
+                  updated = true;
+                }
+              }
+            }
+          }
+          if (updated) {
+            await chrome.storage.local.set({ gce_color_routes: routes });
+            sendResponse({ success: true });
+            return;
+          }
+        }
+        sendResponse({ success: false });
         return;
       }
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Green Oil 路线助手",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Green Oil 官方 Google 地图途径点注入与多路线管理扩展，支持导航链接生成、英文 Excel 导出与云端同步。",
   "icons": {
     "16": "icons/icon-16.png",
@@ -32,8 +32,12 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.google.com/maps/*",
-        "https://www.google.ca/maps/*"
+        "https://*.google.com/maps*",
+        "https://*.google.ca/maps*",
+        "https://*.google.co.uk/maps*",
+        "https://*.google.com.hk/maps*",
+        "https://*.google.com.tw/maps*",
+        "https://*.google.co.jp/maps*"
       ],
       "js": ["content.js"],
       "css": ["content.css"],
@@ -41,10 +45,15 @@
     }
   ],
   "host_permissions": [
-    "https://www.google.com/maps/*",
-    "https://www.google.ca/maps/*",
+    "https://*.google.com/maps*",
+    "https://*.google.ca/maps*",
+    "https://*.google.co.uk/maps*",
+    "https://*.google.com.hk/maps*",
+    "https://*.google.com.tw/maps*",
+    "https://*.google.co.jp/maps*",
     "https://greenoil-api.ydxhjw4j5w.workers.dev/*",
-    "https://mis.greenoilinc.com/*",
+    "*://*.greenoilinc.com/*",
+    "*://greenoilinc.com/*",
     "https://nominatim.openstreetmap.org/*"
   ]
 }
