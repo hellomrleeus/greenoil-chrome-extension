@@ -353,12 +353,19 @@ async function rateLimitMisRequest() {
 }
 
 // ---- Local result caches (chrome.storage.local) ----
-// Only positive results are cached ("matched" places): an MIS customer
-// matched to a Google place, and places jev judged to serve fried food.
-// Places without a match are re-checked on the next 探索.
+// Positive results ("matched" places): an MIS customer matched to a
+// Google place, and places jev judged to serve fried food. Negative
+// results live in the checked-place cache below.
+// Every result is reused for CACHE_FRESH_MS of its kind — MIS 1 day (new
+// customers are signed often), jev fried verdict 7 days (menus change
+// slowly): within it a click skips the place / answers from the cache.
+// After that the place is queried again on the next click, but its pin
+// (and name tag) keeps showing the last known result until CACHE_KEEP_MS.
 // MIS customer records are company data: only read while the MIS login is
 // valid, wiped as soon as a logout is detected (see checkMisAuth).
-const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;          // 30 days
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CACHE_FRESH_MS = { m: DAY_MS, f: 7 * DAY_MS };     // reused without a new query
+const CACHE_KEEP_MS = 30 * DAY_MS;                        // still drawn on the map
 const MIS_CACHE_KEY = "gce_mis_match_cache";              // {placeId: {t, customer}}
 const LEGACY_MIS_CACHE_KEY = "gce_mis_cache";             // old per-keyword cache
 const FRIED_CACHE_KEY = "gce_fried_cache";                // {placeId: {t}}
@@ -370,15 +377,21 @@ async function readCache(key) {
   return data[key] || {};
 }
 
-function freshEntry(entry, now) {
-  return entry && now - entry.t < CACHE_TTL_MS ? entry : null;
+/** Recent enough to reuse instead of querying again. */
+function freshEntry(entry, kind, now) {
+  return entry && now - entry.t < CACHE_FRESH_MS[kind] ? entry : null;
 }
 
-/** Drop expired entries and keep the newest `max`. */
+/** Recent enough to draw as a pin / name tag. */
+function keptEntry(entry, now) {
+  return entry && now - entry.t < CACHE_KEEP_MS ? entry : null;
+}
+
+/** Drop entries past CACHE_KEEP_MS and keep the newest `max`. */
 function pruneCache(map, max, now) {
   return Object.fromEntries(
     Object.entries(map)
-      .filter(([, e]) => freshEntry(e, now))
+      .filter(([, e]) => keptEntry(e, now))
       .sort((a, b) => b[1].t - a[1].t)
       .slice(0, max)
   );
@@ -400,6 +413,170 @@ async function removeCacheEntry(key, placeId) {
   if (!Object.prototype.hasOwnProperty.call(map, placeId)) return;
   delete map[placeId];
   await chrome.storage.local.set({ [key]: map });
+}
+
+// ---- Checked-place cache (grey pins) ----
+// Places checked with a negative result: jev found no fried food (f), or
+// MIS has no customer for them / JEV rejected every candidate (m). While
+// fresh (CACHE_FRESH_MS[kind]) a click on 探索 / 匹配MIS skips them, so each click
+// takes the nearest unchecked places in the window; grey pins stay until
+// CACHE_KEEP_MS. Errors are never recorded (retried next click);
+// Shift+click re-checks everything. Stored per map tile (~7 km, zoom 12):
+// a lookup or write touches only the tiles around the map window, never
+// one ever-growing blob. The index lists the tiles and caps the total.
+const SEEN_TILE_ZOOM = 12;
+const SEEN_KEY_PREFIX = "gce_seen:";                      // gce_seen:<x>:<y> -> {placeId: {n, a, o, f?, m?}}
+const SEEN_INDEX_KEY = "gce_seen_tiles";                  // {tileKey: {t, c}}
+const SEEN_TILE_MAX = 2000;
+const SEEN_TOTAL_MAX = 40000;
+const SEEN_KIND = { fried: "f", mis: "m" };
+let _seenChain = Promise.resolve();
+
+/** Web Mercator world coordinates in [0, 1] (Google's map projection). */
+function worldPoint(lat, lng) {
+  const s = Math.max(-0.9999, Math.min(0.9999, Math.sin((lat * Math.PI) / 180)));
+  return { x: (lng + 180) / 360, y: 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI) };
+}
+
+function seenTile(lat, lng) {
+  const n = 2 ** SEEN_TILE_ZOOM;
+  const w = worldPoint(lat, lng);
+  const clamp = (v) => Math.max(0, Math.min(n - 1, Math.floor(v * n)));
+  return { x: clamp(w.x), y: clamp(w.y) };
+}
+
+function seenTileKey(lat, lng) {
+  const t = seenTile(lat, lng);
+  return `${SEEN_KEY_PREFIX}${t.x}:${t.y}`;
+}
+
+/** Keys of the stored tiles (from the index) overlapping {south, west, north, east}. */
+function seenTileKeysIn(index, b) {
+  const a = seenTile(b.north, b.west);
+  const z = seenTile(b.south, b.east);
+  return Object.keys(index).filter((key) => {
+    const [x, y] = key.slice(SEEN_KEY_PREFIX.length).split(":").map(Number);
+    return x >= a.x && x <= z.x && y >= a.y && y <= z.y;
+  });
+}
+
+function sanitizeBounds(b) {
+  if (!b) return null;
+  const v = [b.south, b.west, b.north, b.east];
+  if (!v.every(Number.isFinite) || b.south > b.north || b.west > b.east) return null;
+  return { south: b.south, west: b.west, north: b.north, east: b.east };
+}
+
+function inBounds(b, lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng) &&
+    lat >= b.south && lat <= b.north && lng >= b.west && lng <= b.east;
+}
+
+function freshSeen(entry, kind, now) {
+  return Boolean(entry && entry[kind] && now - entry[kind] < CACHE_FRESH_MS[kind]);
+}
+
+function keptSeen(entry, kind, now) {
+  return Boolean(entry && entry[kind] && now - entry[kind] < CACHE_KEEP_MS);
+}
+
+/** Drop marks past CACHE_KEEP_MS and empty entries; keep the newest SEEN_TILE_MAX. */
+function pruneSeenTile(tile, now) {
+  const kept = [];
+  for (const [id, e] of Object.entries(tile)) {
+    const f = keptSeen(e, "f", now) ? e.f : 0;
+    const m = keptSeen(e, "m", now) ? e.m : 0;
+    if (!f && !m) continue;
+    const out = { n: e.n, a: e.a, o: e.o };
+    if (f) out.f = f;
+    if (m) out.m = m;
+    kept.push([id, out, Math.max(f, m)]);
+  }
+  kept.sort((x, y) => y[2] - x[2]);
+  return Object.fromEntries(kept.slice(0, SEEN_TILE_MAX).map(([id, e]) => [id, e]));
+}
+
+/** Tiles to drop: expired, or the oldest once the total exceeds the cap. */
+function seenTilesToDrop(index, now) {
+  const drop = [];
+  let total = 0;
+  for (const [key, e] of Object.entries(index).sort((a, b) => b[1].t - a[1].t)) {
+    total += e.c || 0;
+    if (!e.c || now - e.t >= CACHE_KEEP_MS || total > SEEN_TOTAL_MAX) drop.push(key);
+  }
+  return drop;
+}
+
+/** Record (on=true) or clear a negative result of `kind` for a place. */
+function setChecked(place, kind, on) {
+  if (!place?.placeId || !Number.isFinite(place.latitude) || !Number.isFinite(place.longitude)) {
+    return Promise.resolve();
+  }
+  const run = _seenChain.then(async () => {
+    const now = Date.now();
+    const key = seenTileKey(place.latitude, place.longitude);
+    const data = await chrome.storage.local.get([key, SEEN_INDEX_KEY]);
+    const tile = data[key] || {};
+    const prev = tile[place.placeId];
+    if (!on && !prev?.[kind]) return;
+    tile[place.placeId] = {
+      ...(prev || {}), n: String(place.name || "").slice(0, 120),
+      a: Math.round(place.latitude * 1e6) / 1e6, o: Math.round(place.longitude * 1e6) / 1e6,
+      [kind]: on ? now : 0
+    };
+    const pruned = pruneSeenTile(tile, now);
+    const index = data[SEEN_INDEX_KEY] || {};
+    index[key] = { t: now, c: Object.keys(pruned).length };
+    const drop = seenTilesToDrop(index, now);
+    for (const k of drop) delete index[k];
+    const write = { [SEEN_INDEX_KEY]: index };
+    if (!drop.includes(key)) write[key] = pruned;
+    await chrome.storage.local.set(write);
+    if (drop.length) await chrome.storage.local.remove(drop);
+  });
+  _seenChain = run.catch(() => {});
+  return run;
+}
+
+/** [[placeId, entry]] with a negative mark (kept, not only fresh) inside the bounds. */
+async function readChecked(bounds, now) {
+  const index = (await chrome.storage.local.get(SEEN_INDEX_KEY))[SEEN_INDEX_KEY] || {};
+  const keys = seenTileKeysIn(index, bounds);
+  if (!keys.length) return [];
+  const data = await chrome.storage.local.get(keys);
+  const out = [];
+  for (const key of keys) {
+    for (const [id, e] of Object.entries(data[key] || {})) {
+      if ((keptSeen(e, "f", now) || keptSeen(e, "m", now)) && inBounds(bounds, e.a, e.o)) out.push([id, e]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Place ids inside the bounds that `kind` (fried | mis) already has a
+ * result for, positive or negative: the next click skips them.
+ */
+async function handleGetCheckedPlaceIds(message) {
+  const bounds = sanitizeBounds(message.bounds);
+  const kind = SEEN_KIND[message.kind];
+  if (!bounds || !kind) return { success: false, error: "bad request" };
+  const now = Date.now();
+  const ids = new Set();
+  for (const [id, e] of await readChecked(bounds, now)) {
+    if (freshSeen(e, kind, now)) ids.add(id);
+  }
+  if (kind === "f") {
+    for (const [id, e] of Object.entries(await readCache(FRIED_CACHE_KEY))) {
+      if (freshEntry(e, "f", now) && inBounds(bounds, e.latitude, e.longitude)) ids.add(id);
+    }
+  } else if ((await checkMisAuth(true)).loggedIn) {
+    for (const [id, e] of Object.entries(await readCache(MIS_CACHE_KEY))) {
+      const c = freshEntry(e, "m", now)?.jevVerified === true ? e.customer : null;
+      if (c && inBounds(bounds, c.latitude, c.longitude)) ids.add(id);
+    }
+  }
+  return { success: true, ids: [...ids] };
 }
 
 /**
@@ -724,7 +901,7 @@ async function handleExploreMatchMis(message) {
   if (!auth.loggedIn) return { success: false, notLoggedIn: true };
 
   if (!message.forceRefresh) {
-    const hit = freshEntry((await readCache(MIS_CACHE_KEY))[place.placeId], Date.now());
+    const hit = freshEntry((await readCache(MIS_CACHE_KEY))[place.placeId], "m", Date.now());
     if (hit?.jevVerified === true) {
       return { success: true, customer: hit.customer, cached: true, verified: true,
         probability: hit.jevProbability ?? null };
@@ -736,7 +913,11 @@ async function handleExploreMatchMis(message) {
     }
   }
   const query = misQueryFor(place);
-  if (!query) return { success: true, customer: null, diag: { reason: "无地址门牌号也无英文店名" } };
+  if (!query) {
+    await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
+    await setChecked(place, "m", true);
+    return { success: true, customer: null, diag: { reason: "无地址门牌号也无英文店名" } };
+  }
 
   return enqueueMis(async () => {
     if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
@@ -747,6 +928,8 @@ async function handleExploreMatchMis(message) {
     if (!records) return { success: false, error: "MIS 查询失败", diag: { ...diag, reason: "请求失败或被判定为登录页" } };
     const candidates = misCandidatesForPlace(records, place, query.kind);
     if (!candidates.length) {
+      await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
+      await setChecked(place, "m", true);
       const reason = records.length
         ? `MIS 有 ${records.length} 条记录但对应不上这家店（${records.slice(0, 3).map(r => `${r.name} / ${r.address}`).join("；")}）`
         : "MIS 无记录";
@@ -982,7 +1165,7 @@ async function handleExploreClassifyFried(message) {
   const place = sanitizeExplorePlace(message.place);
   if (!place) return { success: false, error: "bad place" };
   if (!message.forceRefresh) {
-    const hit = freshEntry((await readCache(FRIED_CACHE_KEY))[place.placeId], Date.now());
+    const hit = freshEntry((await readCache(FRIED_CACHE_KEY))[place.placeId], "f", Date.now());
     if (hit) return { success: true, fried: true, cached: true };
   }
   // Probe only: lets the page skip the detail-page request for cached places.
@@ -998,7 +1181,10 @@ async function handleExploreClassifyFried(message) {
         await cachePositive(FRIED_CACHE_KEY, place.placeId, {
           probability, name: place.name, latitude: place.latitude, longitude: place.longitude
         }, FRIED_CACHE_MAX);
+      } else {
+        await removeCacheEntry(FRIED_CACHE_KEY, place.placeId); // an older "fried" no longer holds
       }
+      await setChecked(place, "f", !fried);
       return { success: true, fried, probability };
     } catch (err) {
       return { success: false, disabled: Boolean(err.disabled), error: err.message };
@@ -1086,6 +1272,7 @@ async function handleExploreValidateMis(message) {
       } else if (!matches) {
         await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
       }
+      await setChecked(place, "m", !matches);
       return {
         success: true, matches, probability, confidence, margin, ambiguous, mode, selection,
         customer: matches ? customer : null
@@ -1106,38 +1293,104 @@ async function handleGetPlaceTags(message) {
   const placeId = typeof message.placeId === "string" ? message.placeId.slice(0, 80) : "";
   if (!placeId) return { success: false };
   const now = Date.now();
-  const fried = freshEntry((await readCache(FRIED_CACHE_KEY))[placeId], now);
+  const fried = keptEntry((await readCache(FRIED_CACHE_KEY))[placeId], now);
   let customer = null;
   if ((await checkMisAuth(true)).loggedIn) {
-    const hit = freshEntry((await readCache(MIS_CACHE_KEY))[placeId], now);
+    const hit = keptEntry((await readCache(MIS_CACHE_KEY))[placeId], now);
     customer = hit?.jevVerified === true ? hit.customer : null;
   }
   return { success: true, customer, fried: Boolean(fried), probability: fried?.probability ?? null };
 }
 
 /**
- * Every matched place for the resident map pins: MIS customers (only while
- * logged in to MIS) and fried places, from the positive caches.
- * [{placeId, name, latitude, longitude, customer|null, fried}]
+ * Grid clustering for a zoomed-out map: places sharing a `cellPx` square
+ * of the world at `zoom` become one cluster {latitude, longitude (mean),
+ * count, mis, fried, checked}; a place alone in its cell stays a place.
+ * The grid is fixed to the world, so panning does not reshuffle clusters.
  */
-async function handleGetMatchedPlaces() {
+function clusterPlaces(places, zoom, cellPx) {
+  const n = (256 * 2 ** zoom) / cellPx;
+  const cells = new Map();
+  for (const p of places) {
+    const w = worldPoint(p.latitude, p.longitude);
+    const key = `${Math.floor(w.x * n)}:${Math.floor(w.y * n)}`;
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push(p);
+  }
+  const singles = [];
+  const clusters = [];
+  for (const list of cells.values()) {
+    if (list.length === 1) {
+      singles.push(list[0]);
+      continue;
+    }
+    const c = { latitude: 0, longitude: 0, count: list.length, mis: 0, fried: 0, checked: 0 };
+    for (const p of list) {
+      c.latitude += p.latitude / list.length;
+      c.longitude += p.longitude / list.length;
+      if (p.customer) c.mis++;
+      else if (p.fried) c.fried++;
+      else c.checked++;
+    }
+    clusters.push(c);
+  }
+  return { places: singles, clusters };
+}
+
+/**
+ * Places for the resident map pins: MIS customers (only while logged in to
+ * MIS) and fried places from the positive caches, then — with `checked` —
+ * the grey checked places. With `bounds`, only places inside them (the
+ * page loads the area around the map window, not the whole cache).
+ * Without `cluster`, at most `checkedMax` grey places, nearest the center:
+ * {places}. With `cluster` ({zoom, cellPx}, a zoomed-out map), every place
+ * in the bounds, grid-clustered: {places (alone in their cell), clusters}.
+ * `exclude`: place ids the page is drawing itself (a running 探索), left out
+ * so they are not counted twice.
+ * places: [{placeId, name, latitude, longitude, customer|null, fried, checked?}]
+ */
+async function handleGetMatchedPlaces(message = {}) {
   const now = Date.now();
+  const bounds = sanitizeBounds(message.bounds);
+  const cz = Number(message.cluster?.zoom);
+  const cell = Number(message.cluster?.cellPx);
+  const cluster = bounds && Number.isFinite(cz) && cz >= 0 && cz <= 22 && cell >= 16 && cell <= 512;
+  const within = (lat, lng) => bounds ? inBounds(bounds, lat, lng) : Number.isFinite(lat) && Number.isFinite(lng);
   const byId = new Map();
   for (const [placeId, e] of Object.entries(await readCache(FRIED_CACHE_KEY))) {
-    if (!freshEntry(e, now) || !Number.isFinite(e.latitude) || !Number.isFinite(e.longitude)) continue;
+    if (!keptEntry(e, now) || !within(e.latitude, e.longitude)) continue;
     byId.set(placeId, { placeId, name: e.name || "", latitude: e.latitude, longitude: e.longitude,
       customer: null, fried: true, probability: e.probability ?? null });
   }
   if ((await checkMisAuth(true)).loggedIn) {
     for (const [placeId, e] of Object.entries(await readCache(MIS_CACHE_KEY))) {
-      const fresh = freshEntry(e, now);
-      const c = fresh?.jevVerified === true ? fresh.customer : null;
-      if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) continue;
+      const kept = keptEntry(e, now);
+      const c = kept?.jevVerified === true ? kept.customer : null;
+      if (!c || !within(c.latitude, c.longitude)) continue;
       const prev = byId.get(placeId);
       byId.set(placeId, { placeId, name: c.matchedCandidateName || c.name, latitude: c.latitude, longitude: c.longitude,
         customer: c, fried: Boolean(prev), probability: prev?.probability ?? null });
     }
   }
+  if (message.checked && bounds) {
+    const cy = (bounds.south + bounds.north) / 2;
+    const cx = (bounds.west + bounds.east) / 2;
+    const k = Math.cos((cy * Math.PI) / 180);
+    let grey = (await readChecked(bounds, now)).filter(([id]) => !byId.has(id));
+    if (!cluster) {
+      grey = grey.map(([id, e]) => [id, e, (e.a - cy) ** 2 + ((e.o - cx) * k) ** 2])
+        .sort((a, b) => a[2] - b[2])
+        .slice(0, Math.max(0, Math.min(2000, Number(message.checkedMax) || 600)));
+    }
+    for (const [placeId, e] of grey) {
+      byId.set(placeId, { placeId, name: e.n || "", latitude: e.a, longitude: e.o,
+        customer: null, fried: false, probability: null, checked: true });
+    }
+  }
+  if (Array.isArray(message.exclude)) {
+    for (const id of message.exclude.slice(0, 500)) byId.delete(id);
+  }
+  if (cluster) return { success: true, ...clusterPlaces([...byId.values()], cz, cell) };
   return { success: true, places: [...byId.values()] };
 }
 
@@ -1406,7 +1659,11 @@ function isPlaceMatch(w, q) {
         return;
       }
       if (message.action === "getMatchedPlaces") {
-        sendResponse(await handleGetMatchedPlaces());
+        sendResponse(await handleGetMatchedPlaces(message));
+        return;
+      }
+      if (message.action === "getCheckedPlaceIds") {
+        sendResponse(await handleGetCheckedPlaceIds(message));
         return;
       }
       if (message.action === "getPlaceTags") {

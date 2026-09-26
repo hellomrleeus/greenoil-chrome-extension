@@ -97,6 +97,33 @@
     };
   }
 
+  function latFromWorldY(y) {
+    return (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI;
+  }
+
+  /**
+   * Lat/lng box of the view, grown by `scale` around its center
+   * ({south, west, north, east}).
+   */
+  function viewBounds(view, scale = 1) {
+    const s = 256 * Math.pow(2, view.zoom);
+    const dx = (view.w * scale) / 2 / s;
+    const dy = (view.h * scale) / 2 / s;
+    const cx = worldX(view.lng);
+    const cy = worldY(view.lat);
+    return {
+      south: latFromWorldY(Math.min(1, cy + dy)),
+      north: latFromWorldY(Math.max(0, cy - dy)),
+      west: Math.max(-180, (cx - dx) * 360 - 180),
+      east: Math.min(180, (cx + dx) * 360 - 180),
+    };
+  }
+
+  function boundsContain(outer, inner) {
+    return Boolean(outer && inner) && inner.south >= outer.south && inner.north <= outer.north &&
+      inner.west >= outer.west && inner.east <= outer.east;
+  }
+
   /** Inside the visible map: within the canvas and not under `view.hidden` rects. */
   function inView(lat, lng, view) {
     const p = viewPoint(lat, lng, view);
@@ -234,7 +261,8 @@
 
   /**
    * Resumable lister for the wanted food places inside `view` (探索 works
-   * in batches of up to n). Google orders results outward from the view,
+   * in batches of up to n), minus places `exclude(place)` rejects (already
+   * checked earlier). Google orders results outward from the view,
    * so a query stops at its first page with nothing inside the window —
    * no paging far outside it just to fill a batch ("don't force 20").
    * next(n, {isCancelled, onChunk}) returns up to n places not returned
@@ -243,7 +271,7 @@
    * queries are done and nothing is left. Pages go through `schedule`.
    * Throws when Google returned nothing parsable at all (format changed).
    */
-  function createWindowLister(view, { schedule, fetchImpl } = {}) {
+  function createWindowLister(view, { schedule, fetchImpl, exclude } = {}) {
     const doFetch = fetchImpl || fetch;
     const run = schedule || ((fn) => fn());
     const seen = new Set();
@@ -274,7 +302,9 @@
         const key = rec.placeId || `${rec.name}@${rec.latitude.toFixed(5)},${rec.longitude.toFixed(5)}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        if (isWantedFoodPlace(rec.categories)) fresh.push(toPlace(rec));
+        if (!isWantedFoodPlace(rec.categories)) continue;
+        const place = toPlace(rec);
+        if (!exclude || !exclude(place)) fresh.push(place);
       }
       fresh.sort((a, b) => centerDist(a) - centerDist(b));
       buffer.push(...fresh);
@@ -308,13 +338,6 @@
       return out;
     };
     return lister;
-  }
-
-  /** Same map window? (small pans / no zoom change keep the exploration) */
-  function sameView(a, b) {
-    if (!a || !b || Math.abs(a.zoom - b.zoom) > 0.3) return false;
-    const p = viewPoint(b.lat, b.lng, a);
-    return Math.hypot(p.x - a.w / 2, p.y - a.h / 2) < 0.25 * Math.min(a.w, a.h);
   }
 
   // ---- place details (for the fried-food judgement) ----
@@ -388,6 +411,8 @@
     viewAltitude,
     viewPoint,
     inView,
+    viewBounds,
+    boundsContain,
     buildSearchPb,
     buildSearchUrl,
     buildDetailUrl,
@@ -398,7 +423,6 @@
     englishName,
     toPlace,
     createWindowLister,
-    sameView,
     fetchPlaceDetail,
     createRateLimiter,
   };

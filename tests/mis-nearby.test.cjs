@@ -159,12 +159,30 @@ test('window lister: a zoomed-in window needs only one request per query', async
   assert.ok(asked.length <= 6, `few requests (${asked.length})`);
 });
 
-test('sameView: small pans keep the exploration, a new area or zoom starts over', () => {
-  assert.ok(places.sameView(VIEW, { ...VIEW }));
-  assert.ok(places.sameView(VIEW, { ...VIEW, lng: VIEW.lng + 0.0005 }), '~40 px pan');
-  assert.ok(!places.sameView(VIEW, { ...VIEW, lng: VIEW.lng + 0.01 }), 'moved ~800 px');
-  assert.ok(!places.sameView(VIEW, { ...VIEW, zoom: 15 }), 'zoomed out');
-  assert.ok(!places.sameView(null, VIEW));
+test('window lister: excluded (already checked) places are skipped and do not count toward n', async () => {
+  const page = Array.from({ length: 30 }, (_, i) => rec(100 + i, `R${i}`, 0.00002 * i, 0, ['Restaurant'], `${i} A St, T`));
+  page.push(rec(99, 'Coffee', 0, 0, ['Coffee shop'], '99 A St, T'));
+  const asked = [];
+  const lister = places.createWindowLister(VIEW, {
+    fetchImpl: async (url) => { asked.push(url); return { ok: true, text: async () => body(url.includes('!8i') ? [] : page) }; },
+    exclude: (p) => { asked.push(`x:${p.name}`); return Number(p.name.slice(1)) < 15; },
+  });
+  const b = await lister.next(20);
+  assert.deepEqual(b.map((p) => p.name), Array.from({ length: 15 }, (_, i) => `R${15 + i}`),
+    'the nearest 15 were checked before: the batch is the next unchecked ones');
+  assert.ok(!asked.includes('x:Coffee'), 'exclude only sees wanted food places');
+});
+
+test('viewBounds / boundsContain: the lat/lng box of the map window', () => {
+  const b = places.viewBounds(VIEW);
+  assert.ok(b.south < VIEW.lat && VIEW.lat < b.north && b.west < VIEW.lng && VIEW.lng < b.east);
+  assert.ok(places.inView(b.north - 1e-6, b.west + 1e-6, VIEW), 'corner is inside the window');
+  assert.ok(!places.inView(b.north + 1e-4, VIEW.lng, VIEW), 'just outside');
+  const big = places.viewBounds(VIEW, 3);
+  assert.ok(places.boundsContain(big, b));
+  assert.ok(places.boundsContain(big, places.viewBounds({ ...VIEW, lng: VIEW.lng + 0.005 })), 'small pan stays inside the loaded area');
+  assert.ok(!places.boundsContain(big, places.viewBounds({ ...VIEW, lng: VIEW.lng + 0.05 })), 'a new area does not');
+  assert.ok(!places.boundsContain(null, b));
 });
 
 // ---------- google-places.js: details & rate limit ----------
@@ -588,6 +606,155 @@ test('resident pins: every cached match with coordinates; MIS only while logged 
   assert.deepEqual(out.places.map((p) => p.placeId), ['0xf:0xf'], 'no MIS customers while logged out');
 });
 
+test('checked cache: negative results are recorded per action; errors are not', async () => {
+  const h = loadHandlers({
+    misHtml: `<table>${misRow('OLD1', 'OLD GOLDEN WOK', '3601 Victoria Park Ave')}</table>`,
+    jevReply: (body) => ({ answers: body.questions.same_business
+      ? { same_business: { noul: 0.08 } }
+      : { fried: { noul: body.state.name.includes('Fried') ? 0.9 : 0.1 } } }),
+  });
+  const sushi = { ...PLACE, placeId: '0xs:0xs', name: 'Sushi Bar', streetPrefix: '', englishName: '' };
+  const fried = { ...PLACE, placeId: '0xf:0xf', name: 'Fried Hut', latitude: 43.8001 };
+  await h.run('handleExploreClassifyFried', { sessionId: 's', place: sushi });
+  await h.run('handleExploreClassifyFried', { sessionId: 's', place: fried });
+  await h.run('handleExploreMatchMis', { sessionId: 's', place: sushi });            // no MIS query possible
+  const found = await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  await h.run('handleExploreValidateMis', { sessionId: 's', place: PLACE, customer: found.candidate }); // JEV rejects
+
+  const tiles = Object.keys(h.store).filter((k) => k.startsWith('gce_seen:'));
+  assert.equal(tiles.length, 1, 'all three places share one ~7 km tile');
+  const tile = plain(h.store[tiles[0]]);
+  assert.deepEqual(Object.keys(tile).sort(), ['0xa:0xa', '0xs:0xs']);
+  assert.ok(tile['0xs:0xs'].f && tile['0xs:0xs'].m, 'sushi: no fried food, no MIS customer');
+  assert.ok(tile['0xa:0xa'].m && !tile['0xa:0xa'].f, 'rejected tenant: MIS checked only');
+  assert.deepEqual(plain(h.store.gce_seen_tiles)[tiles[0]].c, 2, 'index keeps the per-tile count');
+
+  const bounds = { south: 43.79, west: -79.31, north: 43.81, east: -79.29 };
+  const ids = async (kind, b = bounds) => plain(await h.run('handleGetCheckedPlaceIds', { kind, bounds: b })).ids.sort();
+  assert.deepEqual(await ids('fried'), ['0xf:0xf', '0xs:0xs'], '探索 skips positives and negatives');
+  assert.deepEqual(await ids('mis'), ['0xa:0xa', '0xs:0xs']);
+  assert.deepEqual(await ids('fried', { south: 44, west: -80, north: 44.1, east: -79.9 }), [], 'only inside the window');
+
+  const r = plain(await h.run('handleGetMatchedPlaces', { bounds, checked: true }));
+  const byId = Object.fromEntries(r.places.map((p) => [p.placeId, p]));
+  assert.deepEqual([byId['0xf:0xf'].fried, byId['0xf:0xf'].checked], [true, undefined], 'positive wins over grey');
+  assert.deepEqual([byId['0xs:0xs'].checked, byId['0xs:0xs'].name, byId['0xs:0xs'].latitude], [true, 'Sushi Bar', 43.8]);
+  const noGrey = plain(await h.run('handleGetMatchedPlaces', { bounds }));
+  assert.deepEqual(noGrey.places.map((p) => p.placeId), ['0xf:0xf'], 'grey pins only on request');
+
+  // A later positive clears the negative mark of the same action.
+  let noul = 0.1;
+  const h2 = loadHandlers({ jevReply: () => ({ answers: noul == null ? {} : { fried: { noul } } }) });
+  await h2.run('handleExploreClassifyFried', { sessionId: 's', place: sushi });
+  const key = Object.keys(h2.store).find((k) => k.startsWith('gce_seen:'));
+  assert.ok(h2.store[key]['0xs:0xs'].f);
+  noul = 0.8; // Shift+click re-check now says fried
+  await h2.run('handleExploreClassifyFried', { sessionId: 's', place: sushi, forceRefresh: true });
+  assert.equal(h2.store[key], undefined, 'grey mark cleared (empty tile dropped)');
+  assert.ok(h2.store.gce_fried_cache['0xs:0xs']);
+  noul = null; // unreadable reply: an error, not a verdict
+  const err = await h2.run('handleExploreClassifyFried', { sessionId: 's', place: { ...sushi, placeId: '0xe:0xe' } });
+  assert.equal(err.success, false);
+  assert.ok(!Object.keys(h2.store).some((k) => k.startsWith('gce_seen:')), 'errors are never recorded');
+});
+
+test('checked cache: marks are kept 30 days for display; tiles and total are capped', () => {
+  const h = loadHandlers();
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  const prune = vm.runInContext('pruneSeenTile', h.ctx);
+  const out = plain(prune({
+    a: { n: 'A', a: 1, o: 1, f: now - 29 * day, m: now - 31 * day },
+    b: { n: 'B', a: 1, o: 1, m: now - 31 * day },
+    c: { n: 'C', a: 1, o: 1, m: now - 2 * day },
+  }, now));
+  assert.deepEqual(out, { c: { n: 'C', a: 1, o: 1, m: now - 2 * day }, a: { n: 'A', a: 1, o: 1, f: now - 29 * day } });
+  const drop = vm.runInContext('seenTilesToDrop', h.ctx);
+  assert.deepEqual(plain(drop({ new: { t: now, c: 30000 }, mid: { t: now - day, c: 9000 }, old: { t: now - 2 * day, c: 5000 },
+    expired: { t: now - 31 * day, c: 1 } }, now)).sort(), ['expired', 'old'], 'oldest tiles go once the total passes 40000');
+  const keysIn = vm.runInContext('seenTileKeysIn', h.ctx);
+  const here = vm.runInContext('seenTileKey', h.ctx)(43.8, -79.3);
+  const east = vm.runInContext('seenTileKey', h.ctx)(43.8, -79.0);
+  const index = { [here]: {}, [east]: {}, 'gce_seen:10:10': {} };
+  assert.deepEqual(plain(keysIn(index, { south: 43.79, west: -79.31, north: 43.81, east: -79.29 })), [here],
+    'only stored tiles in range are read, however far the map is zoomed out');
+});
+
+test('results are reused (fried 7 days, MIS 1 day), then queried again but still drawn', async () => {
+  const day = 24 * 60 * 60 * 1000;
+  let noul = 0.9;
+  const h = loadHandlers({ jevReply: () => ({ answers: { fried: { noul } } }) });
+  const wings = { ...PLACE, placeId: '0xw:0xw', name: 'Wings' };
+  const sushi = { ...PLACE, placeId: '0xs:0xs', name: 'Sushi', latitude: 43.8002 };
+  await h.run('handleExploreClassifyFried', { sessionId: 's', place: wings });
+  noul = 0.1;
+  await h.run('handleExploreClassifyFried', { sessionId: 's', place: sushi });
+  const bounds = { south: 43.79, west: -79.31, north: 43.81, east: -79.29 };
+  const ids = async () => plain(await h.run('handleGetCheckedPlaceIds', { kind: 'fried', bounds })).ids.sort();
+  assert.deepEqual(await ids(), ['0xs:0xs', '0xw:0xw'], 'fresh: both skipped');
+
+  // Two days later: fried verdicts are still reused.
+  h.store.gce_fried_cache['0xw:0xw'].t -= 2 * day;
+  const key = Object.keys(h.store).find((k) => k.startsWith('gce_seen:'));
+  h.store[key]['0xs:0xs'].f -= 2 * day;
+  assert.deepEqual(await ids(), ['0xs:0xs', '0xw:0xw'], 'fried: fresh for 7 days');
+  // Eight days later.
+  h.store.gce_fried_cache['0xw:0xw'].t -= 6 * day;
+  h.store[key]['0xs:0xs'].f -= 6 * day;
+  assert.deepEqual(await ids(), [], 'stale: a click queries them again');
+  const shown = plain(await h.run('handleGetMatchedPlaces', { bounds, checked: true }));
+  assert.deepEqual(shown.places.map((p) => [p.placeId, p.fried, Boolean(p.checked)]).sort(),
+    [['0xs:0xs', false, true], ['0xw:0xw', true, false]], 'stale results are still drawn');
+  assert.equal(plain(await h.run('handleGetPlaceTags', { placeId: '0xw:0xw' })).fried, true, 'and still tagged');
+  const probe = await h.run('handleExploreClassifyFried', { sessionId: 's', place: wings, cacheOnly: true });
+  assert.equal(probe.miss, true, 'no cached answer once stale');
+
+  // The re-check now says "not fried": the stale orange pin must not win.
+  const jevCalls = h.calls.jev.length;
+  await h.run('handleExploreClassifyFried', { sessionId: 's', place: wings });
+  assert.equal(h.calls.jev.length, jevCalls + 1);
+  assert.equal(h.store.gce_fried_cache['0xw:0xw'], undefined);
+  const after = plain(await h.run('handleGetMatchedPlaces', { bounds, checked: true }));
+  assert.deepEqual(after.places.find((p) => p.placeId === '0xw:0xw').checked, true, 'now grey');
+
+  // MIS results: 1 day.
+  const m = loadHandlers({ misHtml: '<table></table>' });
+  await m.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  const misIds = async () => plain(await m.run('handleGetCheckedPlaceIds', { kind: 'mis', bounds })).ids;
+  assert.deepEqual(await misIds(), ['0xa:0xa']);
+  const mKey = Object.keys(m.store).find((k) => k.startsWith('gce_seen:'));
+  m.store[mKey]['0xa:0xa'].m -= 2 * day;
+  assert.deepEqual(await misIds(), [], 'MIS: queried again after 1 day');
+  const misShown = plain(await m.run('handleGetMatchedPlaces', { bounds, checked: true }));
+  assert.deepEqual(misShown.places.map((p) => [p.placeId, p.checked]), [['0xa:0xa', true]], 'but still drawn grey');
+});
+
+test('zoomed out: resident places come back grid-clustered', async () => {
+  const h = loadHandlers({ jevReply: (body) => ({ answers: { fried: { noul: body.state.name.startsWith('F') ? 0.9 : 0.1 } } }) });
+  const mk = (id, name, lat, lng) => ({ ...PLACE, placeId: `0x${id}:0x${id}`, name, latitude: lat, longitude: lng });
+  for (const p of [mk(1, 'F1', 43.8, -79.3), mk(2, 'G2', 43.8003, -79.3002), mk(3, 'G3', 43.8001, -79.3001),
+    mk(4, 'F4', 43.9, -79.1)]) {
+    await h.run('handleExploreClassifyFried', { sessionId: 's', place: p });
+  }
+  const bounds = { south: 43.7, west: -79.5, north: 44, east: -79 };
+  const r = plain(await h.run('handleGetMatchedPlaces', { bounds, checked: true, cluster: { zoom: 11, cellPx: 72 } }));
+  assert.equal(r.clusters.length, 1);
+  const c = r.clusters[0];
+  assert.deepEqual([c.count, c.mis, c.fried, c.checked], [3, 0, 1, 2]);
+  assert.ok(Math.abs(c.latitude - 43.80013) < 1e-4, 'placed at the mean position');
+  assert.deepEqual(r.places.map((p) => p.placeId), ['0x4:0x4'], 'a place alone in its cell stays a pin');
+  const zoomedIn = plain(await h.run('handleGetMatchedPlaces', { bounds, checked: true, cluster: { zoom: 18, cellPx: 72 } }));
+  assert.equal(zoomedIn.clusters.length, 0, 'cells shrink as the zoom grows');
+  const plainPins = plain(await h.run('handleGetMatchedPlaces', { bounds, checked: true }));
+  assert.equal(plainPins.clusters, undefined);
+  assert.equal(plainPins.places.length, 4);
+  // A running 探索 draws its own pins: those places are left out, not counted twice.
+  const running = plain(await h.run('handleGetMatchedPlaces',
+    { bounds, checked: true, cluster: { zoom: 11, cellPx: 72 }, exclude: ['0x1:0x1', '0x2:0x2'] }));
+  assert.equal(running.clusters.length, 0);
+  assert.deepEqual(running.places.map((p) => p.placeId).sort(), ['0x3:0x3', '0x4:0x4']);
+});
+
 test('cache entries expire after 30 days and are capped', () => {
   const h = loadHandlers();
   const now = Date.now();
@@ -604,11 +771,11 @@ test('no third-party map data; explore handlers wired', () => {
     assert.ok(!JSON.stringify(manifest).toLowerCase().includes(s), `manifest mentions ${s}`);
   }
   assert.deepEqual(manifest.content_scripts.find((c) => c.js.includes('content.js')).js, ['google-places.js', 'content.js']);
-  for (const a of ['exploreMatchMis', 'exploreValidateMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags', 'getMatchedPlaces']) assert.ok(source.includes(`"${a}"`), a);
+  for (const a of ['exploreMatchMis', 'exploreValidateMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags', 'getMatchedPlaces', 'getCheckedPlaceIds']) assert.ok(source.includes(`"${a}"`), a);
   assert.ok(!source.includes('scanAndMatchMis'), 'old nearest-20 flow removed');
 });
 
-test('content.js: separate 探索/MIS actions share batches and Google place details', () => {
+test('content.js: separate 探索/MIS actions skip checked places and share Google place details', () => {
   assert.match(content, /EXPLORE_BATCH_SIZE = 20/);
   assert.match(content, /lister\.next\(EXPLORE_BATCH_SIZE/);
   assert.match(content, /"greenoil-explore-btn"/);
@@ -617,6 +784,7 @@ test('content.js: separate 探索/MIS actions share batches and Google place det
   assert.match(content, /createRateLimiter\(1000\)/, 'detail pages 1/s');
   assert.match(content, /view,\s+\/\/ snapshot/);
   const detail = content.slice(content.indexOf('async function detailedPlace'), content.indexOf('async function processFriedPlace'));
+  assert.match(detail, /detailMemo\.has\(id\)/, 'details survive across clicks');
   assert.match(detail, /entry\.detailLoaded/);
   assert.match(detail, /entry\.detailPromise/);
   assert.equal((detail.match(/fetchPlaceDetail/g) || []).length, 1, 'one shared detail loader');
@@ -627,7 +795,10 @@ test('content.js: separate 探索/MIS actions share batches and Google place det
   assert.match(mis, /detailedPlace\(session, entry\)/, 'MIS candidate reuses the shared detail');
   assert.match(mis, /action: "exploreValidateMis"/);
   const batch = content.slice(content.indexOf('async function runActionBatch'), content.indexOf('async function handleExploreClick'));
-  assert.ok(batch.indexOf('filter(e => !actionDone(e, action))') < batch.indexOf('session.lister.next'), 'shared places are processed before another Google search');
+  assert.match(batch, /if \(!force\) \{\s+const r = await bgMessage\(\{ action: "getCheckedPlaceIds", kind: action/, 'Shift+click re-checks everything');
+  assert.ok(batch.indexOf('getCheckedPlaceIds') < batch.indexOf('session.lister.next'), 'checked ids known before searching');
+  assert.match(batch, /exclude: \(place\) =>/);
+  assert.ok(!content.includes('继续探索') && !content.includes('继续匹配') && !content.includes('sameView'), 'no continue-session logic');
   // pin colour is derived from both results (order-independent)
   assert.match(content, /function exploreState\(entry\) \{\s+if \(entry\.customer\) return "mis";\s+if \(entry\.fried\) return "fried";\s+return "candidate";/);
   assert.match(fried, /const live = \(\) => session === explore && !session\.cancelled/, 'stale results dropped');
@@ -660,4 +831,26 @@ test('resident pins layer + popup toggle (default on)', () => {
   assert.match(content, /explore\.places\.has\(m\.place\.placeId\)\) \|\| isOnRoute\(m\.place\)/, 'no duplicate pins; waypoint wins');
   assert.match(content, /const known = matched\.get\(place\.placeId\)/, 'explore starts from known matches');
   assert.match(css, /#greenoil-pins-matched\.greenoil-matched-off \{ display: none/);
+  // grey pins: own toggle, loaded per viewport and capped
+  assert.match(popupHtml, /<input type="checkbox" id="toggleCheckedPins" class="custom-checkbox" checked>/);
+  assert.match(popupJs, /gce_show_checked !== false/);
+  assert.match(content, /changes\.gce_show_checked/);
+  assert.match(css, /\.greenoil-checked-off \.greenoil-checked-pin \{ display: none/);
+  assert.match(content, /action: "getMatchedPlaces", bounds: area\.bounds, checked: area\.checked, checkedMax: CHECKED_MAX/);
+  assert.match(content, /if \(!entry\.customer && !entry\.fried && !entry\.checked\)/, 'checked places stay as grey resident pins');
+  // zoomed out: clusters, drawn by map-hook below the pins' zoom limit
+  assert.match(content, /cluster: area\.cluster \? \{ zoom: area\.zoom, cellPx: CLUSTER_CELL_PX \} : null/);
+  assert.match(content, /const cluster = view\.zoom < CLUSTER_BELOW_ZOOM/);
+  assert.match(content, /el\.dataset\.greenoilMinZoom = String\(CLUSTER_MIN_ZOOM\)/);
+  const hook = fs.readFileSync(path.join(__dirname, '../map-hook.js'), 'utf8');
+  assert.match(hook, /getAttribute\("data-greenoil-min-zoom"\)/);
+  assert.match(hook, /if \(!visible \|\| zoom < p\.minZoom\)/);
+  assert.match(css, /\.greenoil-cluster-body \{[^}]*transform: translate\(-50%, -50%\)/s, 'clusters centered on their anchor');
+  // fresh 探索 results follow the same clustering as cached ones
+  assert.match(content, /function sessionPinsShown\(\) \{\s+return Boolean\(explore && explore\.places\.size\) && \(Boolean\(explore\.runningAction\) \|\| !residentArea\?\.cluster\);/);
+  assert.match(content, /function upsertMatched\(entry\) \{[^}]*if \(residentArea\?\.cluster\) return;/, 'no page-made singles on a clustered map');
+  assert.match(content, /const exclude = area\?\.cluster && explore\?\.runningAction \? \[\.\.\.explore\.places\.keys\(\)\] : \[\]/);
+  const batchFn = content.slice(content.indexOf('async function runActionBatch'), content.indexOf('async function handleExploreClick'));
+  assert.equal((batchFn.match(/settleExplorePins\(\)/g) || []).length, 2, 'every finished batch folds into the clusters');
+  assert.match(css, /#greenoil-pins-explore\.greenoil-folded \{ display: none/);
 });

@@ -322,16 +322,16 @@ if (window.__greenoil_injected__) {
   // ==========================================
   // 探索 / 匹配 MIS — restaurants in the map window, 20 at a time
   //
-  // First click snapshots the window and explores the 20 nearest places;
-  // each further click on the same window explores the next 20 (Google's
-  // result pages are fetched only as far as needed). A click after the map
-  // moved elsewhere starts a new exploration of the new window.
+  // Each click snapshots the window and checks the 20 nearest places that
+  // this action has no cached result for (positive or negative, see the
+  // checked-place cache in background.js); Shift+click re-checks them all.
+  // So a further click on the same window simply takes the next 20, and a
+  // click after the map moved works on the new window.
   //
-  // The two buttons run independent jobs over a shared list of places.
-  // Google detail responses (and in-flight requests) live on each entry,
-  // so clicking the other button later never fetches the detail again.
-  // MIS first searches for a candidate; only candidates are sent through
-  // JEV to verify that the saved customer is still the current tenant.
+  // Google detail responses are memoized per page (detailMemo), so the
+  // other button later never fetches the same detail again. MIS first
+  // searches for a candidate; only candidates are sent through JEV to
+  // verify that the saved customer is still the current tenant.
   // ==========================================
 
   const EXPLORE_BATCH_SIZE = 20;
@@ -345,7 +345,9 @@ if (window.__greenoil_injected__) {
   const EXPLORE_COLORS = { candidate: "#9ca3af", fried: "#f59e0b", mis: "#4f46e5" };
   const PLACE_ID_RE = /!1s(0x[0-9a-f]+:0x[0-9a-f]+)/i;
 
-  let explore = null;                  // current exploration
+  let explore = null;                  // current exploration (one click)
+  const detailMemo = new Map();        // placeId -> Google detail (null = none), newest last
+  const DETAIL_MEMO_MAX = 300;
   const placesApi = window.__greenoil_places;
   const searchLimiter = placesApi ? placesApi.createRateLimiter(400) : null;
   const detailLimiter = placesApi ? placesApi.createRateLimiter(1000) : null;
@@ -455,6 +457,7 @@ if (window.__greenoil_injected__) {
     explore = null;
     document.getElementById("greenoil-pins-explore")?.replaceChildren();
     renderMatchedPins(); // matched places stay as resident pins
+    if (residentArea?.cluster) loadMatchedPlaces(); // no longer left out of the clusters
     updatePinsControlBar();
     updateActionButtons();
     const mainPanel = document.querySelector('div[role="main"]');
@@ -500,7 +503,7 @@ if (window.__greenoil_injected__) {
     const runningLabel = explore.runningAction === "mis" ? "匹配MIS中" : "探索中";
     pill("explore-pill", running && b ? runningLabel : "餐馆",
       running && b ? `${b.done}/${b.size}` : c.total,
-      explore.lister.exhausted ? "窗口内餐馆已全部探索" : "已探索的餐馆（再次点击【探索】探索下 20 家）");
+      explore.lister?.exhausted ? "窗口内餐馆已全部检查" : `本次检查的餐馆（再次点击检查下 ${EXPLORE_BATCH_SIZE} 家未检查的餐馆）`);
     pill("fried-pill", "油炸", c.fried, "jev 判断含油炸食物的餐馆");
     pill("mis-pill", "MIS签约", c.mis, "点击查看首个匹配客户", () => {
       const first = exploreMisCustomers()[0];
@@ -522,18 +525,6 @@ if (window.__greenoil_injected__) {
   const ACTION_FRIED = "fried";
   const ACTION_MIS = "mis";
 
-  function actionDone(entry, action) {
-    return action === ACTION_MIS ? entry.misDone : entry.friedDone;
-  }
-
-  function hasPendingAction(session, action) {
-    return [...session.places.values()].some(e => !actionDone(e, action));
-  }
-
-  function canReuseExplore(view) {
-    return Boolean(explore && view && placesApi.sameView(explore.view, view));
-  }
-
   function updateActionButton(id, action, idleText, idleIcon) {
     const container = document.getElementById(id);
     if (!container) return;
@@ -549,10 +540,7 @@ if (window.__greenoil_injected__) {
     let text = idleText;
     if (running) {
       const verb = action === ACTION_MIS ? "匹配中" : "探索中";
-      text = explore.batch ? `${verb} ${explore.batch.done}/${explore.batch.size}` : `${verb}...`;
-    } else if (placesApi && explore && canReuseExplore(currentMapView(null)) &&
-      explore.actionRuns[action] > 0 && (hasPendingAction(explore, action) || !explore.lister.exhausted)) {
-      text = action === ACTION_MIS ? "继续匹配" : "继续探索";
+      text = explore.batch?.size ? `${verb} ${explore.batch.done}/${explore.batch.size}` : `${verb}...`;
     }
     if (label && label.textContent !== text) label.textContent = text;
   }
@@ -562,10 +550,20 @@ if (window.__greenoil_injected__) {
     updateActionButton("greenoil-match-mis-btn", ACTION_MIS, "匹配MIS", SVG_MATCH_MIS);
   }
 
-  /** Load a Google detail at most once for this place during the session. */
+  function rememberDetail(id, detail) {
+    detailMemo.delete(id);
+    detailMemo.set(id, detail);
+    if (detailMemo.size > DETAIL_MEMO_MAX) detailMemo.delete(detailMemo.keys().next().value);
+  }
+
+  /** Load a Google detail at most once for this place on this page. */
   async function detailedPlace(session, entry) {
     const live = () => session === explore && !session.cancelled;
     const id = entry.place.placeId;
+    if (!entry.detailLoaded && detailMemo.has(id)) {
+      entry.detail = detailMemo.get(id);
+      entry.detailLoaded = true;
+    }
     if (entry.detailLoaded) {
       return { ...entry.place, ...(entry.detail || {}), placeId: id, name: entry.place.name };
     }
@@ -582,6 +580,7 @@ if (window.__greenoil_injected__) {
         if (detail !== undefined && live()) {
           entry.detail = detail;
           entry.detailLoaded = true;
+          rememberDetail(id, detail);
         }
         return detail;
       }).finally(() => { entry.detailPromise = null; });
@@ -613,6 +612,7 @@ if (window.__greenoil_injected__) {
     } else if (r.success) {
       entry.fried = r.fried === true;
       entry.friedProbability = r.probability ?? null;
+      if (!entry.fried) entry.checked = true;
       refreshExploreEntry(entry);
     } else if (!r.cancelled) {
       session.friedErrors = (session.friedErrors || 0) + 1;
@@ -649,6 +649,7 @@ if (window.__greenoil_injected__) {
     if (!candidates.length) {
       entry.customer = null;
       entry.misDone = true;
+      entry.checked = true;
       refreshExploreEntry(entry);
       return;
     }
@@ -678,6 +679,7 @@ if (window.__greenoil_injected__) {
       refreshExploreEntry(entry);
     } else if (checked.success) {
       entry.customer = null;
+      entry.checked = true;
       entry.misProbability = checked.probability ?? null;
       const pct = Number.isFinite(checked.probability) ? `${Math.round(checked.probability * 100)}%` : "无概率";
       const reason = checked.ambiguous
@@ -704,7 +706,7 @@ if (window.__greenoil_injected__) {
       const entry = {
         place, customer: known?.customer || null, fried: Boolean(known?.fried),
         friedProbability: known?.friedProbability ?? null, misProbability: null,
-        friedDone: false, misDone: false, detailLoaded: false, detail: null,
+        friedDone: false, misDone: false, checked: Boolean(known?.checked), detailLoaded: false, detail: null,
         detailPromise: null, el: null
       };
       session.places.set(place.placeId, entry);
@@ -714,52 +716,67 @@ if (window.__greenoil_injected__) {
     group?.appendChild(frag);
     applyExploreShadowing();
     renderMatchedPins();
+    // Re-checked places may already be counted in a cluster: leave them out.
+    if (residentArea?.cluster) loadMatchedPlaces();
     updatePinsControlBar();
     updateActionButtons();
   }
 
   async function runActionBatch(session, action, force) {
     const live = () => session === explore && !session.cancelled;
+    const label = action === ACTION_MIS ? "匹配 MIS" : "探索";
+    const title = action === ACTION_MIS ? "MIS 匹配" : "探索";
     session.runningAction = action;
-    session.actionRuns[action]++;
-    const no = ++session.batchNo[action];
-    const batch = { action, no, size: 0, done: 0 };
+    const batch = { action, size: 0, done: 0 };
     session.batch = batch;
     updateActionButtons();
     updatePinsControlBar();
+    const finish = () => {
+      session.runningAction = null;
+      session.batch = null;
+      updateActionButtons();
+      updatePinsControlBar();
+      settleExplorePins();
+    };
 
-    let entries = [...session.places.values()].filter(e => !actionDone(e, action)).slice(0, EXPLORE_BATCH_SIZE);
-    // Consume places discovered by the other action first. Search Google for
-    // another page only when there is no shared work left.
-    if (!entries.length && !session.lister.exhausted) {
-      try {
-        await session.lister.next(EXPLORE_BATCH_SIZE, {
-          isCancelled: () => !live(),
-          onChunk: (chunk) => { if (live()) addExplorePlaces(session, chunk, entries); }
-        });
-      } catch (err) {
-        console.warn("[GreenOil] explore search failed:", err);
-        if (live() && entries.length === 0) {
-          session.runningAction = null;
-          session.batch = null;
-          updateActionButtons();
-          updatePinsControlBar();
-          showToast(action === ACTION_MIS ? "MIS 匹配失败" : "探索失败",
-            "无法读取 Google 地图当前窗口的餐馆，请稍后重试", false);
-          return;
-        }
+    // Places this action already has a result for are skipped, so every
+    // click takes the next unchecked ones. Shift+click re-checks them.
+    let skip = new Set();
+    if (!force) {
+      const r = await bgMessage({ action: "getCheckedPlaceIds", kind: action, bounds: placesApi.viewBounds(session.view) });
+      if (!live()) return;
+      if (r.success) skip = new Set(r.ids);
+    }
+    session.lister = placesApi.createWindowLister(session.view, {
+      schedule: searchLimiter,
+      exclude: (place) => {
+        if (!skip.has(place.placeId)) return false;
+        session.skipped++;
+        return true;
+      }
+    });
+
+    const entries = [];
+    try {
+      await session.lister.next(EXPLORE_BATCH_SIZE, {
+        isCancelled: () => !live(),
+        onChunk: (chunk) => { if (live()) addExplorePlaces(session, chunk, entries); }
+      });
+    } catch (err) {
+      console.warn("[GreenOil] explore search failed:", err);
+      if (live() && entries.length === 0) {
+        finish();
+        showToast(`${title}失败`, "无法读取 Google 地图当前窗口的餐馆，请稍后重试", false);
+        return;
       }
     }
     if (!live()) return;
 
     if (!entries.length) {
-      session.runningAction = null;
-      session.batch = null;
-      updateActionButtons();
-      updatePinsControlBar();
-      showToast(action === ACTION_MIS ? "MIS 匹配完成" : "探索完成", session.places.size
-        ? `当前窗口的 ${session.places.size} 家餐馆已全部处理`
-        : "当前地图窗口内没有找到餐馆，可缩小地图扩大范围", session.places.size > 0);
+      finish();
+      showToast(`${title}完成`, session.skipped
+        ? `当前窗口的 ${session.skipped} 家餐馆都已检查过。移动或缩小地图检查更多，Shift+点击可重新检查`
+        : "当前地图窗口内没有找到餐馆，可缩小地图扩大范围", session.skipped > 0);
       return;
     }
 
@@ -778,8 +795,8 @@ if (window.__greenoil_injected__) {
     session.runningAction = null;
     updateActionButtons();
     updatePinsControlBar();
-    const label = action === ACTION_MIS ? "匹配 MIS" : "探索";
-    console.info(`[GreenOil ${label}] 第 ${batch.no} 批`);
+    settleExplorePins();
+    console.info(`[GreenOil ${label}]`);
     console.table(entries.map(e => ({
       餐馆: e.place.name,
       地址: e.place.displayName,
@@ -793,11 +810,10 @@ if (window.__greenoil_injected__) {
     if (session.misLoggedOut) notes.push("MIS 登录已失效");
     if (session.friedErrors) notes.push(`${session.friedErrors} 家油炸识别失败`);
     if (session.misErrors) notes.push(`${session.misErrors} 家 MIS 查询或校验失败`);
-    const next = hasPendingAction(session, action)
-      ? `再次点击【继续${action === ACTION_MIS ? "匹配" : "探索"}】处理已有地点`
-      : session.lister.exhausted ? "窗口内餐馆已全部处理" : `再次点击处理下 ${EXPLORE_BATCH_SIZE} 家`;
-    showToast(`第 ${batch.no} 批${label}完成`,
-      `${batch.size} 家餐馆：${action === ACTION_MIS ? "MIS 确认" : "油炸"} ${positive} 家。${next}${notes.length ? "（" + notes.join("；") + "）" : ""}`, true);
+    const next = session.lister.exhausted ? "窗口内餐馆已全部检查" : `再次点击检查下 ${EXPLORE_BATCH_SIZE} 家`;
+    const skipped = session.skipped ? `，跳过已检查 ${session.skipped} 家` : "";
+    showToast(`${title}完成`,
+      `${batch.size} 家餐馆：${action === ACTION_MIS ? "MIS 确认" : "油炸"} ${positive} 家${skipped}。${next}${notes.length ? "（" + notes.join("；") + "）" : ""}`, true);
   }
 
   async function handleExploreClick(action, container, forceRefresh = false) {
@@ -823,20 +839,18 @@ if (window.__greenoil_injected__) {
       showToast("提示", "未能读取当前地图范围，请稍后重试", false);
       return;
     }
-    if (!canReuseExplore(view)) {
-      clearExplore();
-      ensurePinLayer();
-      explore = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        view,                // snapshot: later map moves don't change this exploration
-        lister: placesApi.createWindowLister(view, { schedule: searchLimiter }),
-        places: new Map(),
-        batchNo: { fried: 0, mis: 0 },
-        actionRuns: { fried: 0, mis: 0 },
-        batch: null,
-        runningAction: null
-      };
-    }
+    // Checked places are already resident pins: a new click starts over.
+    clearExplore();
+    ensurePinLayer();
+    explore = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      view,                // snapshot: later map moves don't change this exploration
+      lister: null,
+      places: new Map(),
+      skipped: 0,
+      batch: null,
+      runningAction: null
+    };
     runActionBatch(explore, action, forceRefresh);
   }
 
@@ -851,15 +865,49 @@ if (window.__greenoil_injected__) {
     }
   }
 
-  // ---- Resident pins: every matched place (MIS / fried) stays on the map ----
-  // From the positive caches (MIS part only while logged in to MIS) plus
-  // matches found by 探索 in this page. Toggled by the popup checkbox
-  // "地图显示已匹配商家" (chrome.storage gce_show_matched, default on).
+  // ---- Resident pins: matched (MIS / fried) and checked (grey) places ----
+  // From the background caches (MIS part only while logged in to MIS) plus
+  // results found by 探索 in this page. Only the area around the map window
+  // is loaded, reloaded when the map leaves it or the zoom changes — the
+  // cache can grow large, the DOM (and map-hook's per-frame loop) stays
+  // small:
+  //   zoom >= CLUSTER_BELOW_ZOOM: single pins in 3x the window, grey ones at
+  //     most CHECKED_MAX nearest the center;
+  //   zoomed out: grid clusters (one bubble per CLUSTER_CELL_PX square,
+  //     count + MIS/油炸/已检查 ring), computed in background.js, down to
+  //     CLUSTER_MIN_ZOOM (single pins hide below zoom 10 in map-hook).
+  // Toggled by the popup checkboxes "地图显示已匹配商家" (gce_show_matched)
+  // and "地图显示已检查地点" (gce_show_checked), both default on.
   // A place in the current 探索 shows only its 探索 pin; a place on the
   // route shows only its waypoint pin.
 
-  const matched = new Map(); // placeId -> {place, customer, fried, friedProbability, el}
+  const matched = new Map(); // placeId -> {place, customer, fried, friedProbability, checked, el}
+  let residentClusters = []; // [{latitude, longitude, count, mis, fried, checked, el}]
   let showMatched = true;
+  let showChecked = true;
+  const CLUSTER_BELOW_ZOOM = 14;
+  const CLUSTER_CELL_PX = 72;
+  const CLUSTER_MIN_ZOOM = 5;
+  const CHECKED_MAX = 600;
+  let residentArea = null;           // {bounds, zoom, checked, cluster} of the last load
+  let residentLoadSeq = 0;
+  let residentLoading = false;
+  let residentReloadQueued = false;
+
+  /**
+   * 探索 pins are drawn one by one while the batch runs (live progress).
+   * On a zoomed-out (clustered) map they fold into the clusters once it
+   * is done, exactly like cached results — one rule for old and new.
+   */
+  function sessionPinsShown() {
+    return Boolean(explore && explore.places.size) && (Boolean(explore.runningAction) || !residentArea?.cluster);
+  }
+
+  /** Batch done: on a clustered map, reload so its places join the clusters. */
+  function settleExplorePins() {
+    if (residentArea?.cluster) loadMatchedPlaces();
+    else renderMatchedPins();
+  }
 
   function matchedIsHidden(m) {
     return Boolean(explore && explore.places.has(m.place.placeId)) || isOnRoute(m.place);
@@ -869,7 +917,13 @@ if (window.__greenoil_injected__) {
     const group = document.getElementById("greenoil-pins-matched");
     if (!group) return;
     group.classList.toggle("greenoil-matched-off", !showMatched);
+    group.classList.toggle("greenoil-checked-off", !showChecked);
+    document.getElementById("greenoil-pins-explore")?.classList.toggle("greenoil-folded", !sessionPinsShown());
     const frag = document.createDocumentFragment();
+    for (const c of residentClusters) { // under the single pins
+      if (!c.el) c.el = makeClusterPin(c);
+      frag.appendChild(c.el);
+    }
     for (const m of matched.values()) {
       if (!m.el) {
         makeExplorePin(m, 0);
@@ -878,6 +932,7 @@ if (window.__greenoil_injected__) {
       } else {
         paintExplorePin(m);
       }
+      m.el.classList.toggle("greenoil-checked-pin", !m.customer && !m.fried);
       m.el.classList.toggle("greenoil-explore-shadowed", matchedIsHidden(m));
       frag.appendChild(m.el);
     }
@@ -885,10 +940,39 @@ if (window.__greenoil_injected__) {
     window.dispatchEvent(new Event("greenoil:pins"));
   }
 
+  function formatCount(n) {
+    return n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  }
+
+  /**
+   * A cluster bubble, centered on the cluster: size grows with the count,
+   * the ring shows the MIS / 油炸 / 已检查 shares, the glow takes the colour
+   * of the highest one present (MIS > fried > grey), like a heat spot.
+   */
+  function makeClusterPin(c) {
+    const el = document.createElement("div");
+    el.className = "greenoil-waypoint-map-pin greenoil-cluster-pin";
+    el.dataset.kind = "cluster";
+    el.dataset.greenoilLat = String(c.latitude);
+    el.dataset.greenoilLng = String(c.longitude);
+    el.dataset.greenoilMinZoom = String(CLUSTER_MIN_ZOOM);
+    const size = Math.round(Math.min(64, 26 + 7 * Math.log2(c.count)));
+    const a = (c.mis / c.count) * 360;
+    const b = a + (c.fried / c.count) * 360;
+    const ring = `conic-gradient(${EXPLORE_COLORS.mis} 0deg ${a}deg, ${EXPLORE_COLORS.fried} ${a}deg ${b}deg, ` +
+      `${EXPLORE_COLORS.candidate} ${b}deg 360deg)`;
+    const top = c.mis ? "mis" : c.fried ? "fried" : "candidate";
+    el.innerHTML = `<div class="greenoil-cluster-body" data-top="${top}"
+      style="width:${size}px;height:${size}px;background:${ring}"><span>${formatCount(c.count)}</span></div>`;
+    return el;
+  }
+
   function upsertMatched(entry) {
+    // Clustered map: background.js is the only source (see settleExplorePins).
+    if (residentArea?.cluster) return;
     const id = entry.place.placeId;
     const previous = matched.get(id);
-    if (!entry.customer && !entry.fried) {
+    if (!entry.customer && !entry.fried && !entry.checked) {
       previous?.el?.remove();
       matched.delete(id);
       return;
@@ -897,13 +981,60 @@ if (window.__greenoil_injected__) {
     m.customer = entry.customer || null;
     m.fried = Boolean(entry.fried);
     m.friedProbability = entry.friedProbability ?? null;
+    m.checked = Boolean(entry.checked || previous?.checked);
     matched.set(id, m);
   }
 
+  /** The area to load around the current map window, or null (no camera). */
+  function residentAreaFor(view) {
+    if (!view || !placesApi || !(view.w > 0 && view.h > 0)) return null;
+    const cluster = view.zoom < CLUSTER_BELOW_ZOOM;
+    return {
+      // Clusters cover everything in the area: keep it closer to the window.
+      bounds: placesApi.viewBounds(view, cluster ? 1.5 : 3),
+      zoom: view.zoom,
+      checked: showChecked,
+      cluster
+    };
+  }
+
+  /** Reload when the window left the loaded area or the zoom changed. */
+  function residentAreaStale() {
+    const view = currentMapView(null);
+    const area = residentAreaFor(view);
+    if (!area) return false;
+    if (!residentArea?.bounds) return true;
+    return area.cluster !== residentArea.cluster || area.checked !== residentArea.checked ||
+      Math.abs(area.zoom - residentArea.zoom) >= (area.cluster ? 0.5 : 1) ||
+      !placesApi.boundsContain(residentArea.bounds, placesApi.viewBounds(view));
+  }
+
+  /** Coalesce cache change notifications (a batch writes one per place). */
+  function scheduleResidentReload() {
+    if (residentReloadQueued) return;
+    residentReloadQueued = true;
+    setTimeout(() => {
+      residentReloadQueued = false;
+      loadMatchedPlaces();
+    }, 1500);
+  }
+
   async function loadMatchedPlaces() {
-    const r = await bgMessage({ action: "getMatchedPlaces" });
-    if (!r.success || !isAlive()) return;
+    const area = residentAreaFor(currentMapView(null));
+    const seq = ++residentLoadSeq;
+    residentLoading = true;
+    // While 探索 pins are drawn, their places stay out of the clusters.
+    const exclude = area?.cluster && explore?.runningAction ? [...explore.places.keys()] : [];
+    const r = await bgMessage(area
+      ? { action: "getMatchedPlaces", bounds: area.bounds, checked: area.checked, checkedMax: CHECKED_MAX,
+        cluster: area.cluster ? { zoom: area.zoom, cellPx: CLUSTER_CELL_PX } : null, exclude }
+      : { action: "getMatchedPlaces" });
+    if (seq === residentLoadSeq) residentLoading = false;
+    if (!r.success || !isAlive() || seq !== residentLoadSeq) return;
+    residentArea = area;
+    residentClusters = Array.isArray(r.clusters) ? r.clusters.map(c => ({ ...c, el: null })) : [];
     tagMemo.clear();
+    const previous = new Map(matched); // reuse pin elements across reloads
     matched.clear();
     for (const p of r.places || []) {
       matched.set(p.placeId, {
@@ -911,7 +1042,8 @@ if (window.__greenoil_injected__) {
         customer: p.customer || null,
         fried: Boolean(p.fried),
         friedProbability: p.probability ?? null,
-        el: null
+        checked: Boolean(p.checked),
+        el: previous.get(p.placeId)?.el || null
       });
     }
     if (explore) {
@@ -930,8 +1062,9 @@ if (window.__greenoil_injected__) {
   }
 
   if (chrome.storage?.local) {
-    chrome.storage.local.get("gce_show_matched").then((d) => {
+    chrome.storage.local.get(["gce_show_matched", "gce_show_checked"]).then((d) => {
       showMatched = d.gce_show_matched !== false;
+      showChecked = d.gce_show_checked !== false;
       renderMatchedPins();
     }).catch(() => {});
     chrome.storage.onChanged.addListener((changes, area) => {
@@ -940,9 +1073,15 @@ if (window.__greenoil_injected__) {
         showMatched = changes.gce_show_matched.newValue !== false;
         renderMatchedPins();
       }
-      // Keep resident MIS pins in sync when JEV confirms/rejects a match or
-      // logout wipes the customer cache (including in other Maps tabs).
-      if (changes.gce_mis_match_cache) loadMatchedPlaces();
+      if (changes.gce_show_checked) {
+        showChecked = changes.gce_show_checked.newValue !== false;
+        renderMatchedPins();
+        loadMatchedPlaces(); // grey pins are only loaded while shown
+      }
+      // Keep resident pins in sync when JEV confirms/rejects a match, logout
+      // wipes the customer cache, or another Maps tab checked places.
+      if (changes.gce_mis_match_cache || changes.gce_fried_cache ||
+        Object.keys(changes).some(k => k.startsWith("gce_seen:"))) scheduleResidentReload();
     });
   }
 
@@ -1926,10 +2065,12 @@ if (window.__greenoil_injected__) {
     setInterval(() => {
       if (!document.hidden) {
         checkAndInject();
-        const hasPins = currentRouteWaypoints.length > 0 || Boolean(explore && explore.places.size) || matched.size > 0;
+        const hasPins = currentRouteWaypoints.length > 0 || Boolean(explore && explore.places.size) ||
+          matched.size > 0 || residentClusters.length > 0;
         const overlay = document.getElementById("greenoil-waypoint-pins-overlay");
         const canvas = mapCanvas();
         if (hasPins && canvas && overlay?.previousElementSibling !== canvas) rebuildPinElements();
+        if (!residentLoading && residentAreaStale()) loadMatchedPlaces();
         updateActionButtons(); // keep both independent action labels in sync
       }
     }, 600);

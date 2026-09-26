@@ -128,6 +128,7 @@ class PopupController {
 
     this.elWaypointsList = document.getElementById("waypointsList");
     this.elToggleMatchedPins = document.getElementById("toggleMatchedPins");
+    this.elToggleCheckedPins = document.getElementById("toggleCheckedPins");
 
     this.elBtnGenerateNav = document.getElementById("btnGenerateNav");
     this.elBtnExportExcel = document.getElementById("btnExportExcel");
@@ -224,6 +225,13 @@ class PopupController {
     });
     this.elToggleMatchedPins.addEventListener("change", () => {
       chrome.storage?.local?.set({ gce_show_matched: this.elToggleMatchedPins.checked });
+    });
+    // Grey pins: places already checked without a match (default on).
+    chrome.storage?.local?.get("gce_show_checked").then((d) => {
+      this.elToggleCheckedPins.checked = d.gce_show_checked !== false;
+    });
+    this.elToggleCheckedPins.addEventListener("change", () => {
+      chrome.storage?.local?.set({ gce_show_checked: this.elToggleCheckedPins.checked });
     });
 
     // Route Toolbar

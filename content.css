@@ -690,8 +690,49 @@
 #greenoil-pins-explore { z-index: 2 !important; }
 #greenoil-pins-route { z-index: 3 !important; }
 
+/* Clustered map, 探索 batch done: its places are in the clusters now. */
+#greenoil-pins-explore.greenoil-folded { display: none !important; }
+
 /* Popup "地图显示已匹配商家" unchecked */
 #greenoil-pins-matched.greenoil-matched-off { display: none !important; }
+
+/* Grey resident pins (checked, no match): smaller and quieter so hundreds
+   of them don't bury the coloured ones. Popup "地图显示已检查地点" hides them. */
+#greenoil-pins-matched.greenoil-checked-off .greenoil-checked-pin { display: none !important; }
+.greenoil-checked-pin .greenoil-pin-body {
+  transform: scale(0.7);
+  transform-origin: 50% 100%;
+  opacity: 0.8;
+}
+
+/* Zoomed-out map: one bubble per grid cell instead of every pin. The
+   conic ring (inline background) shows the MIS / 油炸 / 已检查 shares; the
+   glow takes the highest colour present, like a heat spot. Centered on
+   the anchor, unlike pins (tip on the anchor). */
+.greenoil-cluster-body {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box !important;
+  padding: 4px !important;
+  border-radius: 50% !important;
+  pointer-events: none !important;
+}
+.greenoil-cluster-body[data-top="mis"] { box-shadow: 0 0 14px 5px rgba(79, 70, 229, 0.45); }
+.greenoil-cluster-body[data-top="fried"] { box-shadow: 0 0 14px 5px rgba(245, 158, 11, 0.45); }
+.greenoil-cluster-body[data-top="candidate"] { box-shadow: 0 0 12px 4px rgba(107, 114, 128, 0.35); }
+.greenoil-cluster-body > span {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: #1f2937 !important;
+  font: 700 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Google Sans", sans-serif !important;
+}
 
 .greenoil-explore-pin { z-index: 1; }
 .greenoil-explore-pin[data-state="fried"] { z-index: 2; }

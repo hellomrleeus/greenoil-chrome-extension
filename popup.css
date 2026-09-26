@@ -179,6 +179,7 @@ html, body {
 
 .legend-mis { background: #4f46e5; }
 .legend-fried { background: #f59e0b; }
+.legend-checked { background: #9ca3af; }
 
 .palette-top-row {
   display: flex;

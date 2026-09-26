@@ -173,7 +173,7 @@
 
   // ---- Pins ----------------------------------------------------------
   var layer = null;
-  var pins = [];              // {el, wx, wy, shown}
+  var pins = [];              // {el, wx, wy, minZoom, shown}
   var mo = null;
 
   function collectPins() {
@@ -184,7 +184,10 @@
       var lat = parseFloat(els[i].getAttribute("data-greenoil-lat"));
       var lng = parseFloat(els[i].getAttribute("data-greenoil-lng"));
       if (!isFinite(lat) || !isFinite(lng)) continue;
-      pins.push({ el: els[i], wx: M.worldX(lng), wy: M.worldY(lat), shown: null });
+      // Clusters opt into a lower zoom with data-greenoil-min-zoom.
+      var minZoom = parseFloat(els[i].getAttribute("data-greenoil-min-zoom"));
+      pins.push({ el: els[i], wx: M.worldX(lng), wy: M.worldY(lat),
+        minZoom: isFinite(minZoom) ? minZoom : MIN_ZOOM, shown: null });
     }
   }
 
@@ -219,12 +222,11 @@
     if (pins.length === 0) return;
 
     var zoom = g ? M.zoomFromScale(g.s) : (urlCam ? urlCam.zoom : 0);
-    var visible = box.w > 0 && box.h > 0 && zoom >= MIN_ZOOM &&
-      (g || (urlCam && !interacting));
+    var visible = box.w > 0 && box.h > 0 && (g || (urlCam && !interacting));
 
     for (var i = 0; i < pins.length; i++) {
       var p = pins[i];
-      if (!visible) { setShown(p, false); continue; }
+      if (!visible || zoom < p.minZoom) { setShown(p, false); continue; }
       var pt = g ? M.projectGL(p.wx, p.wy, g, box.w, box.h)
                  : M.projectUrl(p.wx, p.wy, urlCam, box.w, box.h);
       if (!M.inCanvas(pt, box.w, box.h, CLIP_MARGIN)) { setShown(p, false); continue; }
