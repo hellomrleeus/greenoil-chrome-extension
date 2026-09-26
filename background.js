@@ -1,8 +1,11 @@
 /**
- * Green Oil Chrome Extension - Background Service Worker
- * Manages 5-color route palette persistence, dynamic badge color, and Google Maps theme synchronization.
- * Completely standalone without ES module import dependencies for maximum stability.
+ * Green Oil Chrome Extension - Background Service Worker (ES module)
+ * Manages 5-color route palette persistence, dynamic badge color, Google Maps
+ * theme synchronization, and the 探索 MIS / jev pipeline.
+ * Worker API calls shared with the popup go through api.js (GreenOilApi).
  */
+
+import { GreenOilApi } from "./api.js";
 
 const DEFAULT_ORIGIN = "Green Oil Inc. 4490 Chesswood Dr Unit 3, North York, ON M3J 2B9";
 const WORKER_URL = "https://greenoil-api.ydxhjw4j5w.workers.dev";
@@ -685,7 +688,7 @@ async function handleExploreMatchMis(message) {
 // jev (TypeSafe System One) is a structured-decision model, not a chat
 // model: POST /v1/systemone with a `state` (the restaurant's text) and
 // typed `questions`. A "noul" question returns the probability of "yes".
-// The key comes from the Green Oil Worker (/api/jev/key, operator token
+// The key comes from GreenOilApi.getJevKey (api.js, operator token
 // saved by the popup login). Details arrive at most 1/s, so one request
 // per restaurant, one at a time.
 const JEV_API = {
@@ -709,12 +712,11 @@ async function getJevKey() {
     err.disabled = true;
     throw err;
   }
-  const resp = await fetch(`${WORKER_URL}/api/jev/key`, { headers: { Authorization: `Bearer ${authToken}` } });
-  const data = await resp.json().catch(() => ({}));
+  const data = (await GreenOilApi.getJevKey(authToken)) || {};
   const key = data.key || data.apiKey || data.jevKey;
-  if (!resp.ok || !key) {
+  if (!key) {
     const err = new Error(data.message || data.error || "获取 JEV Key 失败");
-    err.disabled = resp.status === 401;
+    err.disabled = data.error === "Unauthorized"; // login expired: needs the popup again
     throw err;
   }
   _jevKey = key;

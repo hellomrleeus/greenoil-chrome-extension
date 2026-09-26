@@ -237,9 +237,17 @@ function loadHandlers({ loggedIn = true, misHtml, misUrl = 'https://mis.greenoil
     console: { warn() {}, log() {} }, URLSearchParams, AbortSignal, Date, Math, Object, Promise, Number, Set, Map, JSON, Error,
     setTimeout: (fn) => { setImmediate(fn); return 0; }, // MIS 1/s waits run at once in tests
     WORKER_URL: 'https://worker.example',
+    // api.js GreenOilApi (the popup's Worker client), used for the jev key
+    GreenOilApi: {
+      async getJevKey(token) {
+        calls.jevKey = (calls.jevKey || []).concat(token);
+        return token === 'op-token'
+          ? { success: true, apiKey: 'jev-key-from-worker', key: 'jev-key-from-worker', jevKey: 'jev-key-from-worker' }
+          : { error: 'Unauthorized', message: '未登录或凭据已过期' };
+      },
+    },
     fetch: async (url, opts) => {
       url = String(url);
-      if (url.includes('/api/jev/key')) return { ok: true, json: async () => ({ success: true, apiKey: 'jev-key-from-worker', key: 'jev-key-from-worker' }) };
       if (url.includes('api.typesafe.ai')) {
         const body = JSON.parse(opts.body);
         calls.jev.push({ url, auth: opts.headers.Authorization, body });
@@ -347,6 +355,7 @@ test('jev: TypeSafe System One request per place; only "fried" verdicts are cach
   const req = h.calls.jev[0];
   assert.equal(req.url, 'https://api.typesafe.ai/v1/systemone');
   assert.equal(req.auth, 'Bearer jev-key-from-worker');
+  assert.deepEqual(h.calls.jevKey, ['op-token'], 'key fetched once via GreenOilApi.getJevKey(token)');
   assert.equal(req.body.model, 'jev-latest');
   assert.equal(req.body.questions.fried.type, 'noul');
   assert.deepEqual(req.body.state.review_snippets, ['great wings']);
@@ -358,6 +367,22 @@ test('jev: TypeSafe System One request per place; only "fried" verdicts are cach
   const miss = await h.run('handleExploreClassifyFried', { sessionId: 's', place: mk(2, 'Sushi Bar'), cacheOnly: true });
   assert.equal(miss.miss, true);
   assert.equal(h.calls.jev.length, 2, 'probes never call jev');
+});
+
+test('jev: an expired operator login is reported as disabled', async () => {
+  const h = loadHandlers();
+  h.store.authToken = 'expired';
+  const r = await h.run('handleExploreClassifyFried', { sessionId: 's', place: PLACE });
+  assert.deepEqual([r.success, r.disabled, r.error], [false, true, '未登录或凭据已过期']);
+});
+
+test('background is an ES module that reuses api.js for the jev key', () => {
+  assert.equal(manifest.background.type, 'module');
+  assert.match(source, /^import \{ GreenOilApi \} from "\.\/api\.js";$/m);
+  assert.match(source, /GreenOilApi\.getJevKey\(authToken\)/);
+  assert.ok(!source.includes('/api/jev/key'), 'no duplicate Worker call');
+  const api = fs.readFileSync(path.join(__dirname, '../api.js'), 'utf8');
+  assert.match(api, /async getJevKey\(token\)/);
 });
 
 test('jev reply parsing', () => {

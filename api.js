@@ -85,5 +85,25 @@ export const GreenOilApi = {
       console.warn("saveMapRoutes failed:", e);
       return { success: false, error: e.message || "同步云端路线失败" };
     }
+  },
+
+  /**
+   * Fetch Jev API Key (requires authenticated session)
+   */
+  async getJevKey(token) {
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const resp = await fetch(`${this.getWorkerUrl()}/api/jev/key`, {
+        method: "GET",
+        headers
+      });
+      return await resp.json();
+    } catch (e) {
+      console.warn("getJevKey failed:", e);
+      return { success: false, error: e.message || "获取 JEV Key 失败" };
+    }
   }
 };
+
