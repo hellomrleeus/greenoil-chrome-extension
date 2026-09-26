@@ -57,8 +57,8 @@
 
   // Google's own "Restaurants", "Fast food" and "Food court" searches.
   const QUERIES = ["restaurants", "fast food", "food court"];
-  const PAGE_SIZE = 20;
-  const MAX_PAGES_PER_QUERY = 15; // 300 results per query
+  const PAGE_SIZE = 60;            // one request costs about the same as 20
+  const MAX_PAGES_PER_QUERY = 5;   // 300 results per query
   // Kept when any Google category is a restaurant, fast food, food court,
   // cafeteria or canteen ("Chinese restaurant", "Fast food restaurant", ...)
   const FOOD_CATEGORY_RE = /restaurant|fast food|food court|cafeteria|canteen/i;
@@ -234,11 +234,14 @@
 
   /**
    * Resumable lister for the wanted food places inside `view` (探索 works
-   * in batches). next(n) pages through Google's searches only as far as
-   * needed to return up to n places not returned before, nearest to the
-   * view center first; `done` turns true when every query is exhausted.
-   * Pages go through `schedule` (a rate limiter). Throws when Google
-   * returned nothing parsable at all (format changed).
+   * in batches of up to n). Google orders results outward from the view,
+   * so a query stops at its first page with nothing inside the window —
+   * no paging far outside it just to fill a batch ("don't force 20").
+   * next(n, {isCancelled, onChunk}) returns up to n places not returned
+   * before; onChunk(places) streams them as each result page arrives
+   * (each chunk nearest-to-center first). `exhausted` turns true when all
+   * queries are done and nothing is left. Pages go through `schedule`.
+   * Throws when Google returned nothing parsable at all (format changed).
    */
   function createWindowLister(view, { schedule, fetchImpl } = {}) {
     const doFetch = fetchImpl || fetch;
@@ -248,49 +251,62 @@
     let q = 0;
     let page = 0;
     let parsedAny = false;
-    const lister = { done: false, seen: 0 };
+    let done = false;
+    const lister = { exhausted: false, seen: 0 };
+    const centerDist = (p) => {
+      const pt = viewPoint(p.latitude, p.longitude, view);
+      return Math.hypot(pt.x - view.w / 2, pt.y - view.h / 2);
+    };
 
     async function fetchNextPage() {
-      const query = QUERIES[q];
-      const offset = page * PAGE_SIZE;
       const text = await run(async () => {
-        const resp = await doFetch(buildSearchUrl(view, query, PAGE_SIZE, offset), { credentials: "include" });
+        const resp = await doFetch(buildSearchUrl(view, QUERIES[q], PAGE_SIZE, page * PAGE_SIZE), { credentials: "include" });
         if (!resp.ok) throw new Error(`Google search HTTP ${resp.status}`);
         return resp.text();
       });
       const records = parseSearchResponse(text);
       if (records.length) parsedAny = true;
+      let inWindow = 0;
+      const fresh = [];
       for (const rec of records) {
+        if (!inView(rec.latitude, rec.longitude, view)) continue;
+        inWindow++;
         const key = rec.placeId || `${rec.name}@${rec.latitude.toFixed(5)},${rec.longitude.toFixed(5)}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        if (isWantedFoodPlace(rec.categories) && inView(rec.latitude, rec.longitude, view)) {
-          buffer.push(toPlace(rec));
-        }
+        if (isWantedFoodPlace(rec.categories)) fresh.push(toPlace(rec));
       }
+      fresh.sort((a, b) => centerDist(a) - centerDist(b));
+      buffer.push(...fresh);
       lister.seen = seen.size;
       page++;
-      if (records.length < PAGE_SIZE || page >= MAX_PAGES_PER_QUERY) {
+      // Next query when this one ran out or has left the window.
+      if (records.length < PAGE_SIZE || inWindow === 0 || page >= MAX_PAGES_PER_QUERY) {
         q++;
         page = 0;
       }
-      if (q >= QUERIES.length) lister.done = true;
+      if (q >= QUERIES.length) done = true;
     }
 
-    lister.next = async function next(n, isCancelled) {
-      while (buffer.length < n && !lister.done) {
+    lister.next = async function next(n, { isCancelled, onChunk } = {}) {
+      const out = [];
+      const take = () => {
+        const chunk = buffer.splice(0, n - out.length);
+        if (chunk.length) {
+          out.push(...chunk);
+          if (onChunk) onChunk(chunk);
+        }
+      };
+      take();
+      while (out.length < n && !done) {
         if (isCancelled && isCancelled()) break;
         await fetchNextPage();
+        take();
       }
-      if (lister.done && !parsedAny) throw new Error("Google search returned no places (format changed?)");
-      const batch = buffer.splice(0, n);
-      const d = (p) => Math.hypot(viewPoint(p.latitude, p.longitude, view).x - view.w / 2,
-        viewPoint(p.latitude, p.longitude, view).y - view.h / 2);
-      batch.sort((a, b) => d(a) - d(b));
-      if (lister.done && buffer.length === 0) lister.exhausted = true;
-      return batch;
+      if (done && !parsedAny) throw new Error("Google search returned no places (format changed?)");
+      lister.exhausted = done && buffer.length === 0;
+      return out;
     };
-    lister.exhausted = false;
     return lister;
   }
 

@@ -597,28 +597,59 @@ if (window.__greenoil_injected__) {
   async function runExploreBatch(session, force) {
     const live = () => session === explore && !session.cancelled;
     session.running = true;
-    session.batch = null;
+    session.batchNo++;
+    const batch = { no: session.batchNo, size: 0, done: 0 };
+    session.batch = batch;
     updateExploreButton();
     updatePinsControlBar();
 
-    let places;
+    // Places stream in page by page: each chunk gets its pins and starts
+    // its MIS / jev work right away (no waiting for a full batch of 20).
+    const entries = [];
+    const work = [];
+    const onChunk = (chunk) => {
+      if (!live()) return;
+      const fresh = chunk.filter(p => !session.places.has(p.placeId));
+      if (!fresh.length) return;
+      const group = document.getElementById("greenoil-pins-explore") ||
+        (ensurePinLayer(), document.getElementById("greenoil-pins-explore"));
+      const frag = document.createDocumentFragment();
+      for (const place of fresh) {
+        const entry = { place, customer: null, fried: false, friedProbability: null, el: null };
+        session.places.set(place.placeId, entry);
+        frag.appendChild(makeExplorePin(entry, entries.length));
+        entries.push(entry);
+      }
+      group?.appendChild(frag);
+      applyExploreShadowing();
+      window.dispatchEvent(new Event("greenoil:pins"));
+      batch.size = entries.length;
+      updatePinsControlBar();
+      updateExploreButton();
+      for (const entry of entries.slice(entries.length - fresh.length)) {
+        work.push(exploreProcessPlace(session, entry, force));
+      }
+    };
+
     try {
-      places = await session.lister.next(EXPLORE_BATCH_SIZE, () => !live());
+      await session.lister.next(EXPLORE_BATCH_SIZE, { isCancelled: () => !live(), onChunk });
     } catch (err) {
       console.warn("[GreenOil] explore search failed:", err);
-      if (live()) {
+      if (live() && entries.length === 0) {
         session.running = false;
+        session.batchNo--;
         updateExploreButton();
         updatePinsControlBar();
         showToast("探索失败", "无法读取 Google 地图当前窗口的餐馆，请稍后重试", false);
+        return;
       }
-      return;
     }
     if (!live()) return;
 
-    const fresh = places.filter(p => !session.places.has(p.placeId));
-    if (fresh.length === 0) {
+    if (entries.length === 0) {
       session.running = false;
+      session.batchNo--;
+      session.batch = null;
       updateExploreButton();
       updatePinsControlBar();
       showToast("探索完成", session.places.size
@@ -627,25 +658,7 @@ if (window.__greenoil_injected__) {
       return;
     }
 
-    session.batchNo++;
-    const batch = { no: session.batchNo, size: fresh.length, done: 0 };
-    session.batch = batch;
-    const group = document.getElementById("greenoil-pins-explore") ||
-      (ensurePinLayer(), document.getElementById("greenoil-pins-explore"));
-    const frag = document.createDocumentFragment();
-    const entries = fresh.map((place, i) => {
-      const entry = { place, customer: null, fried: false, friedProbability: null, el: null };
-      session.places.set(place.placeId, entry);
-      frag.appendChild(makeExplorePin(entry, i));
-      return entry;
-    });
-    group?.appendChild(frag);
-    applyExploreShadowing();
-    window.dispatchEvent(new Event("greenoil:pins"));
-    updatePinsControlBar();
-    updateExploreButton();
-
-    await Promise.all(entries.map(entry => exploreProcessPlace(session, entry, force)));
+    await Promise.all(work);
     if (!live()) return;
 
     session.running = false;

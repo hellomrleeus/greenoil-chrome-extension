@@ -97,46 +97,66 @@ test('search request: Google\'s own template, paged with !8i, no session ids', (
   assert.ok(Math.abs(places.viewAltitude(43.8045, 16, 375) - 2811.99) < 5);
 });
 
-test('window lister: 20 at a time, pages fetched only as needed, nearest first, resumable', async () => {
+test('window lister: up to 20 per batch, streamed per page, no forced filling, resumable', async () => {
   const asked = [];
-  // 45 restaurants spread north of the center (index = distance order), then fast food
-  const many = Array.from({ length: 45 }, (_, i) => rec(100 + i, `R${i}`, 0.00002 * (45 - i), 0, ['Restaurant'], `${i} A St, T`));
+  // 45 in-window restaurants on page 1 (index = distance order), then only far-away results
+  const near = Array.from({ length: 45 }, (_, i) => rec(100 + i, `R${i}`, 0.00002 * (45 - i), 0, ['Restaurant'], `${i} A St, T`));
+  const far = Array.from({ length: 60 }, (_, i) => rec(500 + i, `Far${i}`, 0.05, 0, ['Restaurant'], `${i} Z St, T`));
   const fetchImpl = async (url) => {
     const q = decodeURIComponent(url.split('&q=')[1]);
     const off = Number((url.match(/!8i(\d+)/) || [0, 0])[1]);
+    assert.match(url, /!7i60/, '60 results per request');
     asked.push(`${q}@${off}`);
     let page = [];
-    if (q === 'restaurants') page = many.slice(off, off + 20);
+    if (q === 'restaurants' && off === 0) page = [...near, ...far.slice(0, 15)];
+    if (q === 'restaurants' && off === 60) page = far;          // outside the window: stop this query
     if (q === 'fast food' && off === 0) {
-      page = [rec(100, 'R0', 0, 0, ['Restaurant'], '0 A St, T'), // already seen
+      page = [rec(100, 'R0', 0, 0, ['Restaurant'], '0 A St, T'), // already returned
         rec(2, 'Fries', 0.0003, 0, ['Fast food restaurant'], '2 B St, T'),
-        rec(3, 'Coffee', 0.0003, 0, ['Coffee shop'], '3 B St, T'),
-        rec(4, 'Far', 0.03, 0, ['Restaurant'], '4 B St, T')];
+        rec(3, 'Coffee', 0.0003, 0, ['Coffee shop'], '3 B St, T')];
     }
     return { ok: true, text: async () => body(page) };
   };
   const lister = places.createWindowLister(VIEW, { fetchImpl });
 
-  const b1 = await lister.next(20);
-  assert.deepEqual(asked, ['restaurants@0'], 'first batch: one result page only');
+  const chunks = [];
+  const b1 = await lister.next(20, { onChunk: (c) => chunks.push(c.map((p) => p.name)) });
+  assert.deepEqual(asked, ['restaurants@0'], 'one request for the first batch');
   assert.equal(b1.length, 20);
-  assert.equal(b1[0].name, 'R19', 'nearest to the window center first');
-  assert.ok(!lister.exhausted);
+  assert.equal(b1[0].name, 'R44', 'nearest to the window center first');
+  assert.deepEqual(chunks, [b1.map((p) => p.name)], 'streamed as the page arrived');
 
   const b2 = await lister.next(20);
-  assert.deepEqual(asked, ['restaurants@0', 'restaurants@20']);
+  assert.deepEqual(asked, ['restaurants@0'], 'second batch served from the same page');
   assert.equal(b2.length, 20);
 
   const b3 = await lister.next(20);
-  assert.deepEqual(b3.map((p) => p.name).sort(), ['Fries', 'R40', 'R41', 'R42', 'R43', 'R44'].sort(),
-    'rest of the window: no coffee, nothing outside the window, no repeats');
+  assert.deepEqual(asked, ['restaurants@0', 'restaurants@60', 'fast food@0', 'food court@0'],
+    'a page entirely outside the window ends that query (no paging further out)');
+  assert.deepEqual(b3.map((p) => p.name).sort(), ['Fries', 'R0', 'R1', 'R2', 'R3', 'R4'].sort(),
+    'only 6 left: returned without forcing 20; no coffee, nothing outside, no repeats');
   assert.equal(lister.exhausted, true);
   assert.deepEqual(await lister.next(20), []);
-  const all = [...b1, ...b2, ...b3].map((p) => p.placeId);
-  assert.equal(new Set(all).size, all.length, 'each place returned once');
 
   const empty = places.createWindowLister(VIEW, { fetchImpl: async () => ({ ok: true, text: async () => ")]}'\n[]" }) });
   await assert.rejects(empty.next(20), /no places/, 'format change is reported');
+});
+
+test('window lister: a zoomed-in window needs only one request per query', async () => {
+  const asked = [];
+  const lister = places.createWindowLister(VIEW, {
+    fetchImpl: async (url) => {
+      asked.push(url.split('&q=')[1]);
+      // 4 places in the window, the rest of the page far away (like a single plaza at zoom 18)
+      const page = [rec(1, 'A', 0, 0, ['Restaurant'], '1 A St'), rec(2, 'B', 0.0001, 0, ['Restaurant'], '2 A St'),
+        rec(3, 'C', 0.0002, 0, ['Restaurant'], '3 A St'), rec(4, 'D', -0.0001, 0, ['Restaurant'], '4 A St'),
+        ...Array.from({ length: 56 }, (_, i) => rec(900 + i, `X${i}`, 0.05, 0, ['Restaurant'], 'far'))];
+      return { ok: true, text: async () => body(url.includes('!8i') ? [] : page) };
+    },
+  });
+  const b = await lister.next(20);
+  assert.equal(b.length, 4, 'not forced to 20');
+  assert.ok(asked.length <= 6, `few requests (${asked.length})`);
 });
 
 test('sameView: small pans keep the exploration, a new area or zoom starts over', () => {
