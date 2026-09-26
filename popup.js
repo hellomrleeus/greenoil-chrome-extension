@@ -127,6 +127,7 @@ class PopupController {
     this.elBtnBatchDelete = document.getElementById("btnBatchDelete");
 
     this.elWaypointsList = document.getElementById("waypointsList");
+    this.elToggleMatchedPins = document.getElementById("toggleMatchedPins");
 
     this.elBtnGenerateNav = document.getElementById("btnGenerateNav");
     this.elBtnExportExcel = document.getElementById("btnExportExcel");
@@ -216,6 +217,15 @@ class PopupController {
   }
 
   bindEvents() {
+    // Map layer: resident pins for matched places (default on). Maps tabs
+    // react through chrome.storage.onChanged.
+    chrome.storage?.local?.get("gce_show_matched").then((d) => {
+      this.elToggleMatchedPins.checked = d.gce_show_matched !== false;
+    });
+    this.elToggleMatchedPins.addEventListener("change", () => {
+      chrome.storage?.local?.set({ gce_show_matched: this.elToggleMatchedPins.checked });
+    });
+
     // Route Toolbar
     this.elBtnOptimizeRoute.addEventListener("click", () => this.handleOptimizeRoute());
     this.elBtnClearRoute.addEventListener("click", () => this.handleClearRoute());

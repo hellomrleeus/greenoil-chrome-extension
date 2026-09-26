@@ -118,6 +118,7 @@ if (window.__greenoil_injected__) {
           isMisLoggedIn = Boolean(message.auth.loggedIn);
           const misContainer = document.getElementById("greenoil-match-mis-btn");
           if (misContainer) setExploreButtonAuth(misContainer, isMisLoggedIn);
+          loadMatchedPlaces(); // MIS resident pins follow the MIS login
         }
 
         if (message.action === "didPanToWaypoint" && message.waypoint) {
@@ -254,8 +255,9 @@ if (window.__greenoil_injected__) {
       layer.id = "greenoil-waypoint-pin-layer";
       overlay.appendChild(layer);
     }
-    // 探索 pins below, route waypoints on top (waypoint > MIS > fried > grey).
-    for (const id of ["greenoil-pins-explore", "greenoil-pins-route"]) {
+    // Resident matched pins, then 探索 pins, route waypoints on top
+    // (waypoint > MIS > fried > grey).
+    for (const id of ["greenoil-pins-matched", "greenoil-pins-explore", "greenoil-pins-route"]) {
       if (!document.getElementById(id)) {
         const group = document.createElement("div");
         group.id = id;
@@ -312,6 +314,7 @@ if (window.__greenoil_injected__) {
       }
     }
     applyExploreShadowing();
+    renderMatchedPins();
     // Ask map-hook.js to position the new pins right away.
     window.dispatchEvent(new Event("greenoil:pins"));
   }
@@ -403,6 +406,7 @@ if (window.__greenoil_injected__) {
   // A result arrived for this place: repaint if its derived state changed.
   function refreshExploreEntry(entry) {
     if (!entry.el) return;
+    if (entry.customer || entry.fried) upsertMatched(entry); // stays on the map after clearing
     const before = entry.el.dataset.state;
     paintExplorePin(entry);
     if (entry.el.dataset.state !== before) {
@@ -448,6 +452,7 @@ if (window.__greenoil_injected__) {
     }
     explore = null;
     document.getElementById("greenoil-pins-explore")?.replaceChildren();
+    renderMatchedPins(); // matched places stay as resident pins
     updatePinsControlBar();
     updateExploreButton();
     const mainPanel = document.querySelector('div[role="main"]');
@@ -615,14 +620,16 @@ if (window.__greenoil_injected__) {
         (ensurePinLayer(), document.getElementById("greenoil-pins-explore"));
       const frag = document.createDocumentFragment();
       for (const place of fresh) {
-        const entry = { place, customer: null, fried: false, friedProbability: null, el: null };
+        const known = matched.get(place.placeId); // start from what is already known: no grey flash
+        const entry = { place, customer: known?.customer || null, fried: Boolean(known?.fried),
+          friedProbability: known?.friedProbability ?? null, el: null };
         session.places.set(place.placeId, entry);
         frag.appendChild(makeExplorePin(entry, entries.length));
         entries.push(entry);
       }
       group?.appendChild(frag);
       applyExploreShadowing();
-      window.dispatchEvent(new Event("greenoil:pins"));
+      renderMatchedPins(); // hide resident pins now shown by 探索
       batch.size = entries.length;
       updatePinsControlBar();
       updateExploreButton();
@@ -736,6 +743,83 @@ if (window.__greenoil_injected__) {
     }
   }
 
+  // ---- Resident pins: every matched place (MIS / fried) stays on the map ----
+  // From the positive caches (MIS part only while logged in to MIS) plus
+  // matches found by 探索 in this page. Toggled by the popup checkbox
+  // "地图显示已匹配商家" (chrome.storage gce_show_matched, default on).
+  // A place in the current 探索 shows only its 探索 pin; a place on the
+  // route shows only its waypoint pin.
+
+  const matched = new Map(); // placeId -> {place, customer, fried, friedProbability, el}
+  let showMatched = true;
+
+  function matchedIsHidden(m) {
+    return Boolean(explore && explore.places.has(m.place.placeId)) || isOnRoute(m.place);
+  }
+
+  function renderMatchedPins() {
+    const group = document.getElementById("greenoil-pins-matched");
+    if (!group) return;
+    group.classList.toggle("greenoil-matched-off", !showMatched);
+    const frag = document.createDocumentFragment();
+    for (const m of matched.values()) {
+      if (!m.el) {
+        makeExplorePin(m, 0);
+        m.el.classList.add("greenoil-matched-pin");
+        m.el.querySelector(".greenoil-pin-body").classList.remove("greenoil-explore-rise");
+      } else {
+        paintExplorePin(m);
+      }
+      m.el.classList.toggle("greenoil-explore-shadowed", matchedIsHidden(m));
+      frag.appendChild(m.el);
+    }
+    group.replaceChildren(frag);
+    window.dispatchEvent(new Event("greenoil:pins"));
+  }
+
+  function upsertMatched(entry) {
+    if (!entry.customer && !entry.fried) return;
+    const m = matched.get(entry.place.placeId) || { place: entry.place, el: null };
+    m.customer = entry.customer || m.customer || null;
+    m.fried = Boolean(entry.fried || m.fried);
+    m.friedProbability = entry.friedProbability ?? m.friedProbability ?? null;
+    matched.set(entry.place.placeId, m);
+  }
+
+  async function loadMatchedPlaces() {
+    const r = await bgMessage({ action: "getMatchedPlaces" });
+    if (!r.success || !isAlive()) return;
+    matched.clear();
+    for (const p of r.places || []) {
+      matched.set(p.placeId, {
+        place: { placeId: p.placeId, name: p.name, latitude: p.latitude, longitude: p.longitude },
+        customer: p.customer || null,
+        fried: Boolean(p.fried),
+        friedProbability: p.probability ?? null,
+        el: null
+      });
+    }
+    if (explore) for (const e of explore.places.values()) upsertMatched(e);
+    ensurePinLayer();
+    renderMatchedPins();
+  }
+
+  if (chrome.storage?.local) {
+    chrome.storage.local.get("gce_show_matched").then((d) => {
+      showMatched = d.gce_show_matched !== false;
+      renderMatchedPins();
+    }).catch(() => {});
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (!isAlive() || area !== "local") return;
+      if (changes.gce_show_matched) {
+        showMatched = changes.gce_show_matched.newValue !== false;
+        renderMatchedPins();
+      }
+      // MIS logout wipes the customer cache: drop those resident pins.
+      if (changes.gce_mis_match_cache && !changes.gce_mis_match_cache.newValue) loadMatchedPlaces();
+    });
+  }
+
   // ---- Name tag on a place page: MIS签约 > 油炸 (one tag, highest wins) ----
 
   function placeIdOf(placeData) {
@@ -755,6 +839,8 @@ if (window.__greenoil_injected__) {
     if (entry && (entry.customer || entry.fried)) {
       return { customer: entry.customer, fried: entry.fried, probability: entry.friedProbability };
     }
+    const resident = id && matched.get(id);
+    if (resident) return { customer: resident.customer, fried: resident.fried, probability: resident.friedProbability };
     if (!id) return null;
     const memo = tagMemo.get(id);
     if (memo && Date.now() - memo.t < 15000) return memo.info;
@@ -1669,7 +1755,7 @@ if (window.__greenoil_injected__) {
     setInterval(() => {
       if (!document.hidden) {
         checkAndInject();
-        const hasPins = currentRouteWaypoints.length > 0 || Boolean(explore && explore.places.size);
+        const hasPins = currentRouteWaypoints.length > 0 || Boolean(explore && explore.places.size) || matched.size > 0;
         const overlay = document.getElementById("greenoil-waypoint-pins-overlay");
         const canvas = mapCanvas();
         if (hasPins && canvas && overlay?.previousElementSibling !== canvas) rebuildPinElements();
@@ -1678,6 +1764,7 @@ if (window.__greenoil_injected__) {
     }, 600);
 
     ensureMapHook();
+    loadMatchedPlaces();
 
     // Initial check immediately on script evaluation
     checkAndInject();

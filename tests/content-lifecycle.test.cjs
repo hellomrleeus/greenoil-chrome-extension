@@ -28,7 +28,7 @@ function boot(sharedDocument) {
 }
 test('full content script boots and performs only local extension reads on Maps load', () => {
   const f = boot();
-  assert.deepEqual(f.messages.map(m => m.action), ['getActiveTheme', 'injectMapHook', 'getRouteWaypoints']);
+  assert.deepEqual(f.messages.map(m => m.action), ['getActiveTheme', 'injectMapHook', 'getMatchedPlaces', 'getRouteWaypoints']);
   for (const callback of [...f.intervals.values()]) callback();
   vm.runInContext(source, f.context); // duplicate injection must not add timers
   assert.equal(f.intervals.size, 1);

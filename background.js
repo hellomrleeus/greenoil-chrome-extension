@@ -831,7 +831,11 @@ async function handleExploreClassifyFried(message) {
       const probability = friedProbability(await callJev(friedRequest(place)));
       if (probability === null) return { success: false, error: "jev 返回格式无法识别" };
       const fried = probability >= FRIED_THRESHOLD;
-      if (fried) await cachePositive(FRIED_CACHE_KEY, place.placeId, { probability }, FRIED_CACHE_MAX);
+      if (fried) {
+        await cachePositive(FRIED_CACHE_KEY, place.placeId, {
+          probability, name: place.name, latitude: place.latitude, longitude: place.longitude
+        }, FRIED_CACHE_MAX);
+      }
       return { success: true, fried, probability };
     } catch (err) {
       return { success: false, disabled: Boolean(err.disabled), error: err.message };
@@ -855,6 +859,31 @@ async function handleGetPlaceTags(message) {
     customer = freshEntry((await readCache(MIS_CACHE_KEY))[placeId], now)?.customer || null;
   }
   return { success: true, customer, fried: Boolean(fried), probability: fried?.probability ?? null };
+}
+
+/**
+ * Every matched place for the resident map pins: MIS customers (only while
+ * logged in to MIS) and fried places, from the positive caches.
+ * [{placeId, name, latitude, longitude, customer|null, fried}]
+ */
+async function handleGetMatchedPlaces() {
+  const now = Date.now();
+  const byId = new Map();
+  for (const [placeId, e] of Object.entries(await readCache(FRIED_CACHE_KEY))) {
+    if (!freshEntry(e, now) || !Number.isFinite(e.latitude) || !Number.isFinite(e.longitude)) continue;
+    byId.set(placeId, { placeId, name: e.name || "", latitude: e.latitude, longitude: e.longitude,
+      customer: null, fried: true, probability: e.probability ?? null });
+  }
+  if ((await checkMisAuth(true)).loggedIn) {
+    for (const [placeId, e] of Object.entries(await readCache(MIS_CACHE_KEY))) {
+      const c = freshEntry(e, now)?.customer;
+      if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) continue;
+      const prev = byId.get(placeId);
+      byId.set(placeId, { placeId, name: c.matchedCandidateName || c.name, latitude: c.latitude, longitude: c.longitude,
+        customer: c, fried: Boolean(prev), probability: prev?.probability ?? null });
+    }
+  }
+  return { success: true, places: [...byId.values()] };
 }
 
 // Runtime Message Dispatcher
@@ -1115,6 +1144,10 @@ function isPlaceMatch(w, q) {
       }
       if (message.action === "exploreClassifyFried") {
         sendResponse(await handleExploreClassifyFried(message));
+        return;
+      }
+      if (message.action === "getMatchedPlaces") {
+        sendResponse(await handleGetMatchedPlaces());
         return;
       }
       if (message.action === "getPlaceTags") {

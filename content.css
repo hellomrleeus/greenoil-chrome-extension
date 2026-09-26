@@ -678,8 +678,12 @@
 }
 
 /* Each group is its own stacking layer: route waypoints always on top. */
-#greenoil-pins-explore { z-index: 1 !important; }
-#greenoil-pins-route { z-index: 2 !important; }
+#greenoil-pins-matched { z-index: 1 !important; }
+#greenoil-pins-explore { z-index: 2 !important; }
+#greenoil-pins-route { z-index: 3 !important; }
+
+/* Popup "地图显示已匹配商家" unchecked */
+#greenoil-pins-matched.greenoil-matched-off { display: none !important; }
 
 .greenoil-explore-pin { z-index: 1; }
 .greenoil-explore-pin[data-state="fried"] { z-index: 2; }

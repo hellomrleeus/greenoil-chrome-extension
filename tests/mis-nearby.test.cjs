@@ -476,6 +476,28 @@ test('place tags: cached MIS match (login-gated) and cached fried verdict by pla
   assert.equal(out.customer, null, 'no customer data while logged out');
 });
 
+test('resident pins: every cached match with coordinates; MIS only while logged in', async () => {
+  const h = loadHandlers({
+    misHtml: `<table>${misRow('GO1', 'SEAFOOD PRINCESS', '3601 Victoria Park Ave')}</table>`,
+    jevReply: () => ({ answers: { fried: { noul: 0.9 } } }),
+  });
+  await h.run('handleExploreMatchMis', { sessionId: 's', place: PLACE });
+  const friedPlace = { ...PLACE, placeId: '0xf:0xf', name: 'Wings Hut', latitude: 43.81, longitude: -79.31 };
+  await h.run('handleExploreClassifyFried', { sessionId: 's', place: friedPlace });
+  assert.deepEqual(plain(h.store.gce_fried_cache['0xf:0xf']).name, 'Wings Hut', 'fried cache keeps name + coordinates');
+  h.store.gce_fried_cache['0xold:0xold'] = { t: Date.now(), probability: 0.7 }; // pre-coordinates entry: skipped
+
+  const r = plain(await h.run('handleGetMatchedPlaces', {}));
+  const byId = Object.fromEntries(r.places.map((p) => [p.placeId, p]));
+  assert.deepEqual(Object.keys(byId).sort(), ['0xa:0xa', '0xf:0xf']);
+  assert.equal(byId['0xa:0xa'].customer.code, 'GO1');
+  assert.deepEqual([byId['0xf:0xf'].fried, byId['0xf:0xf'].latitude, byId['0xf:0xf'].customer], [true, 43.81, null]);
+
+  h.state.loggedIn = false;
+  const out = plain(await h.run('handleGetMatchedPlaces', {}));
+  assert.deepEqual(out.places.map((p) => p.placeId), ['0xf:0xf'], 'no MIS customers while logged out');
+});
+
 test('cache entries expire after 30 days and are capped', () => {
   const h = loadHandlers();
   const now = Date.now();
@@ -492,7 +514,7 @@ test('no third-party map data; explore handlers wired', () => {
     assert.ok(!JSON.stringify(manifest).toLowerCase().includes(s), `manifest mentions ${s}`);
   }
   assert.deepEqual(manifest.content_scripts.find((c) => c.js.includes('content.js')).js, ['google-places.js', 'content.js']);
-  for (const a of ['exploreMatchMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags']) assert.ok(source.includes(`"${a}"`), a);
+  for (const a of ['exploreMatchMis', 'exploreClassifyFried', 'exploreCancel', 'getPlaceTags', 'getMatchedPlaces']) assert.ok(source.includes(`"${a}"`), a);
   assert.ok(!source.includes('scanAndMatchMis'), 'old nearest-20 flow removed');
 });
 
@@ -527,4 +549,19 @@ test('content.js: one name tag, MIS签约 > 油炸, exact place id (no loose nam
   assert.match(css, /\.greenoil-heading-tag \{[^}]*height: 20px/s);
   assert.match(css, /\.greenoil-heading-tag\.is-mis/);
   assert.match(css, /\.greenoil-heading-tag\.is-fried/);
+});
+
+test('resident pins layer + popup toggle (default on)', () => {
+  const popupHtml = fs.readFileSync(path.join(__dirname, '../popup.html'), 'utf8');
+  const popupJs = fs.readFileSync(path.join(__dirname, '../popup.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../content.css'), 'utf8');
+  assert.match(popupHtml, /<input type="checkbox" id="toggleMatchedPins" class="custom-checkbox" checked>/);
+  assert.match(popupHtml, /地图显示已匹配商家/);
+  assert.match(popupJs, /gce_show_matched !== false/, 'default checked');
+  assert.match(popupJs, /set\(\{ gce_show_matched: this\.elToggleMatchedPins\.checked \}\)/);
+  assert.match(content, /\["greenoil-pins-matched", "greenoil-pins-explore", "greenoil-pins-route"\]/);
+  assert.match(content, /changes\.gce_show_matched/);
+  assert.match(content, /explore\.places\.has\(m\.place\.placeId\)\) \|\| isOnRoute\(m\.place\)/, 'no duplicate pins; waypoint wins');
+  assert.match(content, /const known = matched\.get\(place\.placeId\)/, 'explore starts from known matches');
+  assert.match(css, /#greenoil-pins-matched\.greenoil-matched-off \{ display: none/);
 });
