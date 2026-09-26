@@ -95,7 +95,7 @@ if (window.__greenoil_injected__) {
     } catch (_) {}
 
     if (chrome.runtime?.onMessage) {
-      chrome.runtime.onMessage.addListener((message) => {
+      chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!isAlive()) return;
         if (message.action === "themeColorChanged" && message.theme) {
           currentTheme = message.theme;
@@ -145,6 +145,8 @@ if (window.__greenoil_injected__) {
 
         if (message.action === "panToLocation" && message.waypoint) {
           inPagePanToLocation(message.targetPath, message.waypoint);
+          // Answer so the background does not fall back to a page load.
+          sendResponse({ success: true });
         }
 
         if (message.action === "renderMisMatches" && Array.isArray(message.matches)) {
@@ -238,57 +240,41 @@ if (window.__greenoil_injected__) {
   }
 
   // ==========================================
-  // Map Pin Engine — rAF-driven, camera-interpolated, zero snap-back
+  // Map pins (DOM only)
   //
-  // Pins are a pure function of the (interpolated) map camera each frame.
-  // The camera arrives live from the main-world camera bridge
-  // (history.replaceState hook) with a location.href poll as backup.
-  // While the user drags, pointer deltas are layered on top and rebased
-  // onto every fresh camera so pins never visibly jump ("找补").
+  // Positioning lives in map-hook.js (page MAIN world): it reads Google's
+  // exact per-frame camera from the WebGL renderer and moves every
+  // [data-greenoil-lat][data-greenoil-lng] element inside the pin layer in
+  // the same frame the map is drawn. This side only builds the elements.
+  //
+  // The overlay is mounted inside Google's map container, right after the
+  // map canvas: Google's side panel, search box and controls stack above
+  // it, and the container's overflow:hidden clips pins to the map.
   // ==========================================
 
-  const pinMath = window.__greenoil_pinMath || null;
   const SVG_MIS_SHIELD_SM = `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="#4f46e5" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>`;
-  const SMOOTH_PAN_MAX_KM = 1.5;
 
-  let camA = null;            // previous camera {lat,lng,zoom,t}
-  let camB = null;            // latest camera {lat,lng,zoom,t}
-  let pinLoopRunning = false;
-  let pinDragging = false;
-  let pinDrag = null;         // transient {dx,dy} while dragging
-  let pinLastPX = 0;
-  let pinLastPY = 0;
-  let pinItems = [];          // {el, lat, lng}
-
-  function nowMs() {
-    return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-  }
-
-  function mapCanvasRect() {
-    const canvas = document.querySelector("canvas.H1VXrf");
-    if (canvas && canvas.getBoundingClientRect) return canvas.getBoundingClientRect();
-    return { left: 0, top: 0, width: (window.innerWidth || 0), height: (window.innerHeight || 0) };
-  }
-
-  // Visible map area: canvas minus Google's left panel (div[role="main"]).
-  // The URL camera is centered on the visible map, so pins must be
-  // projected against this rect, not the full canvas.
-  function visibleMapRect() {
-    if (!pinMath) return mapCanvasRect();
-    let panelRect = null;
-    try {
-      const panel = document.querySelector('div[role="main"]');
-      if (panel && panel.getBoundingClientRect) panelRect = panel.getBoundingClientRect();
-    } catch (_) {}
-    return pinMath.visibleMapRect(mapCanvasRect(), panelRect);
+  function mapCanvas() {
+    let best = null;
+    let bestArea = 0;
+    document.querySelectorAll("canvas.H1VXrf").forEach((c) => {
+      const area = c.clientWidth * c.clientHeight;
+      if (area > bestArea) { best = c; bestArea = area; }
+    });
+    return best;
   }
 
   function ensurePinLayer() {
+    const canvas = mapCanvas();
     let overlay = document.getElementById("greenoil-waypoint-pins-overlay");
     if (!overlay) {
       overlay = document.createElement("div");
       overlay.id = "greenoil-waypoint-pins-overlay";
-      document.body.appendChild(overlay);
+      overlay.setAttribute("aria-hidden", "true");
+    }
+    // (Re)mount right after the map canvas; Google may rebuild its container.
+    if (canvas && overlay.previousElementSibling !== canvas) {
+      canvas.insertAdjacentElement("afterend", overlay);
     }
     let layer = document.getElementById("greenoil-waypoint-pin-layer");
     if (!layer) {
@@ -296,263 +282,66 @@ if (window.__greenoil_injected__) {
       layer.id = "greenoil-waypoint-pin-layer";
       overlay.appendChild(layer);
     }
-    return layer;
+    return overlay.isConnected ? layer : null;
   }
 
-  function onCameraUpdate(cam) {
-    if (!pinMath || !cam) return;
-    if (![cam.lat, cam.lng, cam.zoom].every(Number.isFinite)) return;
-    const t = nowMs();
-    if (camB && pinMath.sameCamera(camB, cam)) return;
-    // Rebase the transient drag delta so pins do not jump when the
-    // (lagging) URL camera catches up with the map.
-    if (pinDrag && camB) {
-      try { pinMath.rebaseDragDelta(pinDrag, camB, cam, visibleMapRect()); } catch (_) {}
-    }
-    camA = camB;
-    camB = { lat: cam.lat, lng: cam.lng, zoom: cam.zoom, t };
-    if (!camA) camA = { lat: camB.lat, lng: camB.lng, zoom: camB.zoom, t: t - 16 };
-    wakePinLoop();
-  }
-
-  function pollMapCamera() {
-    if (!pinMath) return;
-    const cam = pinMath.parseCameraFromUrl(location.href);
-    if (cam) onCameraUpdate(cam);
-  }
-
-  function cameraNow() {
-    if (!pinMath || !camB) return null;
-    return pinMath.interpolateCamera(camA, camB, nowMs());
-  }
-
-  function wakePinLoop() {
-    if (pinLoopRunning || !isAlive()) return;
-    pinLoopRunning = true;
-    requestAnimationFrame(pinTick);
-  }
-
-  function pinTick() {
-    if (!isAlive()) { pinLoopRunning = false; return; }
-    const cam = cameraNow();
-    const layer = document.getElementById("greenoil-waypoint-pin-layer");
-    const show = !!(cam && layer && cam.zoom >= 10 && pinItems.length > 0 && pinMath);
-    if (layer) {
-      if (!show) {
-        if (layer.style.display !== "none") layer.style.display = "none";
-      } else {
-        if (layer.style.display === "none") layer.style.display = "";
-        const rect = visibleMapRect();
-        const dx = pinDrag ? pinDrag.dx : 0;
-        const dy = pinDrag ? pinDrag.dy : 0;
-        for (let i = 0; i < pinItems.length; i++) {
-          const p = pinItems[i];
-          const pt = pinMath.projectToViewport(p.lat, p.lng, cam, rect);
-          // Clip pins whose anchor is outside the visible map (e.g. panned
-          // away or behind the side panel) instead of letting them float
-          // over Google's UI.
-          if (!pinMath.pointInRect(pt.x, pt.y, rect, 48)) {
-            if (p.el.style.display !== "none") p.el.style.display = "none";
-            continue;
-          }
-          if (p.el.style.display === "none") p.el.style.display = "";
-          p.el.style.transform =
-            `translate3d(${(pt.x + dx).toFixed(1)}px, ${(pt.y + dy).toFixed(1)}px, 0) translate(-50%, -100%)`;
-        }
-      }
-    }
-    const active = pinDragging || (camB && nowMs() - camB.t < 400);
-    if (active && isAlive()) {
-      requestAnimationFrame(pinTick);
-    } else {
-      pinLoopRunning = false;
-    }
+  function makePin(lat, lng, kind, color, innerHtml) {
+    const pin = document.createElement("div");
+    pin.className = kind === "mis"
+      ? "greenoil-waypoint-map-pin greenoil-mis-map-pin"
+      : "greenoil-waypoint-map-pin";
+    pin.dataset.kind = kind;
+    pin.dataset.greenoilLat = String(lat);
+    pin.dataset.greenoilLng = String(lng);
+    pin.innerHTML = `
+      <div class="greenoil-pin-body">
+        <svg viewBox="0 0 30 38" class="greenoil-pin-svg" aria-hidden="true">
+          <path d="M15 0C6.716 0 0 6.716 0 15c0 10.5 15 23 15 23s15-12.5 15-23c0-8.284-6.716-15-15-15z" fill="${color}"/>
+          <circle cx="15" cy="14" r="9" fill="#ffffff"/>
+        </svg>
+        ${innerHtml}
+      </div>`;
+    return pin;
   }
 
   function rebuildPinElements() {
     const layer = ensurePinLayer();
-    layer.innerHTML = "";
-    pinItems = [];
+    if (!layer) return;
     const themeColor = currentTheme?.color || "#059669";
+    const frag = document.createDocumentFragment();
 
     currentRouteWaypoints.forEach((wp, idx) => {
       const lat = parseFloat(wp.latitude);
       const lng = parseFloat(wp.longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-      const pin = document.createElement("div");
-      pin.className = "greenoil-waypoint-map-pin";
-      pin.dataset.kind = "waypoint";
-      pin.innerHTML = `
-        <div class="greenoil-pin-body">
-          <svg viewBox="0 0 30 38" class="greenoil-pin-svg" aria-hidden="true">
-            <path d="M15 0C6.716 0 0 6.716 0 15c0 10.5 15 23 15 23s15-12.5 15-23c0-8.284-6.716-15-15-15z" fill="${themeColor}"/>
-            <circle cx="15" cy="14" r="9" fill="#ffffff"/>
-          </svg>
-          <span class="greenoil-pin-num" style="color:${themeColor}">${idx + 1}</span>
-        </div>`;
-      layer.appendChild(pin);
-      pinItems.push({ el: pin, lat, lng });
+      frag.appendChild(makePin(lat, lng, "waypoint", themeColor,
+        `<span class="greenoil-pin-num" style="color:${themeColor}">${idx + 1}</span>`));
     });
 
     currentMisMatches.forEach((m) => {
       const lat = parseFloat(m.latitude);
       const lng = parseFloat(m.longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-      const pin = document.createElement("div");
-      pin.className = "greenoil-waypoint-map-pin greenoil-mis-map-pin";
-      pin.dataset.kind = "mis";
-      pin.innerHTML = `
-        <div class="greenoil-pin-body">
-          <svg viewBox="0 0 30 38" class="greenoil-pin-svg" aria-hidden="true">
-            <path d="M15 0C6.716 0 0 6.716 0 15c0 10.5 15 23 15 23s15-12.5 15-23c0-8.284-6.716-15-15-15z" fill="#4f46e5"/>
-            <circle cx="15" cy="14" r="9" fill="#ffffff"/>
-          </svg>
-          <span class="greenoil-pin-shield">${SVG_MIS_SHIELD_SM}</span>
-        </div>`;
-      layer.appendChild(pin);
-      pinItems.push({ el: pin, lat, lng });
+      frag.appendChild(makePin(lat, lng, "mis", "#4f46e5",
+        `<span class="greenoil-pin-shield">${SVG_MIS_SHIELD_SM}</span>`));
     });
 
-    wakePinLoop();
+    layer.replaceChildren(frag);
+    // Ask map-hook.js to position the new pins right away.
+    window.dispatchEvent(new Event("greenoil:pins"));
   }
 
-  // ---- Drag augmentation: mirror the pointer 1:1 while dragging ----
-  function isMapSurface(t) {
-    if (!(t instanceof Element)) return false;
-    if (t.closest('[id^="greenoil-"]')) return false; // our own UI
-    if (t.closest('div[role="main"]')) return false; // Google left panel
-    return true;
-  }
-
-  listen(window, "pointerdown", (e) => {
-    if (!e.isTrusted || e.button !== 0 || pinDragging) return;
-    if (!isMapSurface(e.target)) return;
-    pinDragging = true;
-    if (!pinDrag) pinDrag = { dx: 0, dy: 0 };
-    pinLastPX = e.clientX;
-    pinLastPY = e.clientY;
-    wakePinLoop();
-  }, { capture: true });
-
-  listen(window, "pointermove", (e) => {
-    if (!e.isTrusted || !pinDragging || !pinDrag) return;
-    pinDrag.dx += e.clientX - pinLastPX;
-    pinDrag.dy += e.clientY - pinLastPY;
-    pinLastPX = e.clientX;
-    pinLastPY = e.clientY;
-  }, { capture: true, passive: true });
-
-  const endPinDrag = () => {
-    if (!pinDragging) return;
-    pinDragging = false;
-    // Settle: rebase once against the freshest URL camera, then drop the
-    // transient delta. Residual is ~0 thanks to per-update rebasing.
-    setTimeout(() => {
-      if (pinDragging || !isAlive()) return;
-      pollMapCamera();
-      pinDrag = null;
-      wakePinLoop();
-    }, 600);
-  };
-  listen(window, "pointerup", endPinDrag, { capture: true });
-  listen(window, "pointercancel", endPinDrag, { capture: true });
-
-  // ---- Camera feed wiring ----
-  listen(window, "message", (event) => {
-    if (event.data?.type === "GREENOIL_CAM" && event.data.cam) {
-      const c = event.data.cam;
-      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng) && Number.isFinite(c.zoom)) {
-        onCameraUpdate({ lat: c.lat, lng: c.lng, zoom: c.zoom });
-      }
-    }
-  });
-
-  function requestCameraBridge() {
+  // Tabs opened before the extension was (re)loaded have no MAIN-world
+  // hook yet; ask the background to inject it.
+  function ensureMapHook() {
+    if (document.documentElement.hasAttribute("data-greenoil-maphook")) return;
     try {
-      if (chrome.runtime?.id) {
-        chrome.runtime.sendMessage({ action: "injectCameraBridge" }, () => {
-          if (chrome.runtime.lastError) {
-            console.warn("[GreenOil] camera bridge inject:", chrome.runtime.lastError.message);
-          }
-        });
-      }
+      chrome.runtime.sendMessage({ action: "injectMapHook" }, () => {
+        if (chrome.runtime.lastError) {
+          console.warn("[GreenOil] map hook inject:", chrome.runtime.lastError.message);
+        }
+      });
     } catch (_) {}
-  }
-
-  // ---- Smooth nearby pan: synthesize a real drag gesture ----
-  function anchorNavigateTo(targetPath, wp) {
-    let p = wp?.mapsUrl || targetPath;
-    if (!p && wp?.latitude && wp?.longitude) {
-      p = `/maps/place/${encodeURIComponent(wp.name || "")}/@${wp.latitude},${wp.longitude},17z`;
-    }
-    if (p) {
-      try {
-        const link = document.createElement("a");
-        link.href = p;
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      } catch (err) {
-        console.warn("[GreenOil] Navigation failed:", err);
-      }
-    }
-  }
-
-  function smoothDragPanTo(targetPath, tLat, tLng, cam) {
-    const canvas = document.querySelector("canvas.H1VXrf");
-    if (!canvas || typeof PointerEvent === "undefined" || !pinMath) return false;
-    const rect = visibleMapRect();
-    const startX = rect.left + rect.width / 2;
-    const startY = rect.top + rect.height / 2;
-    const pt = pinMath.projectToViewport(tLat, tLng, cam, rect);
-    const dx = startX - (rect.left + pt.x);
-    const dy = startY - (rect.top + pt.y);
-    if (Math.hypot(dx, dy) < 4) return true; // already centered
-
-    const mk = (type, x, y) => new PointerEvent(type, {
-      bubbles: true, cancelable: true, clientX: x, clientY: y,
-      button: 0, buttons: type === "pointerup" ? 0 : 1,
-      pointerId: 7, pointerType: "mouse", isPrimary: true,
-    });
-    try {
-      canvas.dispatchEvent(mk("pointerdown", startX, startY));
-    } catch (err) {
-      return false;
-    }
-
-    const steps = 28;
-    const dur = 550;
-    let i = 0;
-    const before = { lat: cam.lat, lng: cam.lng };
-    const wpRef = { targetPath };
-    const tickMove = () => {
-      if (!isAlive()) return;
-      i++;
-      const a = Math.min(1, i / steps);
-      const e = a < 0.5 ? 2 * a * a : 1 - Math.pow(-2 * a + 2, 2) / 2; // easeInOutQuad
-      try {
-        canvas.dispatchEvent(mk("pointermove", startX + dx * e, startY + dy * e));
-      } catch (_) {}
-      if (a < 1) {
-        setTimeout(tickMove, dur / steps);
-      } else {
-        try { canvas.dispatchEvent(mk("pointerup", startX + dx, startY + dy)); } catch (_) {}
-        // Watchdog: if the camera never moved, the page ignored the
-        // synthetic gesture — fall back to link navigation.
-        setTimeout(() => {
-          if (!isAlive()) return;
-          const nowCam = pinMath.parseCameraFromUrl(location.href);
-          const moved = nowCam && pinMath.haversineKm(before.lat, before.lng, nowCam.lat, nowCam.lng) > 0.02;
-          if (!moved) {
-            console.warn("[GreenOil] synthetic drag pan ineffective; falling back to link navigation");
-            anchorNavigateTo(wpRef.targetPath, null);
-          }
-        }, 900);
-      }
-    };
-    setTimeout(tickMove, dur / steps);
-    return true;
   }
 
   function updatePinsControlBar() {
@@ -639,21 +428,15 @@ if (window.__greenoil_injected__) {
   }
 
   function inPagePanToLocation(targetPath, wp) {
-    // Nearby target: glide the map with a synthesized drag gesture so the
-    // place panel is NOT reloaded and the whole map does NOT refresh.
-    // Far target (or no coordinates): fall back to link navigation.
-    const tLat = parseFloat(wp?.latitude);
-    const tLng = parseFloat(wp?.longitude);
-    const cam = (typeof cameraNow === "function" && cameraNow()) ||
-                (pinMath && pinMath.parseCameraFromUrl(location.href));
-    let smoothDone = false;
-    if (pinMath && Number.isFinite(tLat) && Number.isFinite(tLng) && cam &&
-        pinMath.shouldSmoothPan(cam, tLat, tLng, SMOOTH_PAN_MAX_KM)) {
-      smoothDone = smoothDragPanTo(targetPath, tLat, tLng, cam);
-    }
-    if (!smoothDone) {
-      anchorNavigateTo(targetPath, wp);
-    }
+    // map-hook.js (MAIN world) navigates without reloading the page:
+    // place URLs go through Google's own router (panel + animated camera),
+    // nearby coordinates glide with a drag; otherwise a normal navigation.
+    window.postMessage({
+      type: "GREENOIL_NAVIGATE",
+      path: targetPath || "",
+      lat: wp?.latitude,
+      lng: wp?.longitude,
+    }, "*");
 
     lastProcessedKey = "";
     setTimeout(() => {
@@ -1059,13 +842,6 @@ if (window.__greenoil_injected__) {
     }
   }
 
-  listen(window, "resize", () => {
-    // Canvas rect is re-read every frame; just wake the pin loop.
-    if (typeof wakePinLoop === "function") wakePinLoop();
-  });
-  listen(window, "popstate", () => {
-    if (typeof pollMapCamera === "function") pollMapCamera();
-  });
   listen(window, "keydown", (e) => {
     if (e.key === "Escape") closeMisModal();
   });
@@ -1633,17 +1409,19 @@ if (window.__greenoil_injected__) {
 
     window.__greenoil_check__ = checkAndInject;
 
-    // Periodic check to inject buttons and sync place state.
-    // Also backs up the camera feed (the main-world bridge posts live updates).
+    // Periodic check to inject buttons and sync place state; also keeps
+    // the pin overlay mounted if Google rebuilds its map container.
     setInterval(() => {
       if (!document.hidden) {
         checkAndInject();
-        if (typeof pollMapCamera === "function") pollMapCamera();
+        const hasPins = currentRouteWaypoints.length > 0 || currentMisMatches.length > 0;
+        const overlay = document.getElementById("greenoil-waypoint-pins-overlay");
+        const canvas = mapCanvas();
+        if (hasPins && canvas && overlay?.previousElementSibling !== canvas) rebuildPinElements();
       }
     }, 600);
 
-    // Ask the background to inject the main-world camera bridge (one-time per tab).
-    if (typeof requestCameraBridge === "function") requestCameraBridge();
+    ensureMapHook();
 
     // Initial check immediately on script evaluation
     checkAndInject();

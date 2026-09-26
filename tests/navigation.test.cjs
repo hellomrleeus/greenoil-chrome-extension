@@ -41,7 +41,7 @@ test('waypoint navigation smoothly pans in-page without reloading the page', asy
   assert.equal(sentMessages[0].msg.waypoint.name, "Fran's Restaurant");
 });
 
-test('waypoint navigation falls back to chrome.scripting when tab message is unanswered', async () => {
+test('waypoint navigation falls back to the MAIN-world map hook when the tab message is unanswered', async () => {
   const executedScripts = [];
   const tab = { id: 7, windowId: 2, url: 'https://www.google.com/maps/' };
   const context = vm.createContext({
@@ -62,18 +62,46 @@ test('waypoint navigation falls back to chrome.scripting when tab message is una
     }
   });
 
-  const start = source.indexOf('async function handlePanToWaypoint');
-  const end = source.indexOf('// ==========================================', start);
+  const start = source.indexOf('async function injectMapHook');
+  const end = source.indexOf('async function ensureMapsContentScript', start);
   vm.runInContext(source.slice(start, end), context);
+  const hStart = source.indexOf('async function handlePanToWaypoint');
+  const hEnd = source.indexOf('// ==========================================', hStart);
+  vm.runInContext(source.slice(hStart, hEnd), context);
 
   const result = await vm.runInContext(
-    'handlePanToWaypoint({ name: "Fran\'s Restaurant", mapsUrl: "https://www.google.com/maps/place/Fran/@43.6552,-79.3807,17z" })',
+    'handlePanToWaypoint({ name: "Fran\'s Restaurant", latitude: 43.6552, longitude: -79.3807, mapsUrl: "https://www.google.com/maps/place/Fran/@43.6552,-79.3807,17z" })',
     context
   );
 
   assert.equal(result.success, true);
   assert.equal(result.panned, true);
-  assert.equal(executedScripts.length, 1);
-  assert.equal(executedScripts[0].target.tabId, 7);
-  assert.equal(executedScripts[0].args[0], '/maps/place/Fran/@43.6552,-79.3807,17z');
+  assert.equal(executedScripts.length, 2);
+  assert.equal(JSON.stringify(executedScripts[0].files), JSON.stringify(['pin-math.js', 'map-hook.js']));
+  assert.equal(executedScripts[0].world, 'MAIN');
+  assert.equal(executedScripts[1].world, 'MAIN');
+  assert.equal(JSON.stringify(executedScripts[1].args), JSON.stringify(['/maps/place/Fran/@43.6552,-79.3807,17z', 43.6552, -79.3807]));
+  // No <a>.click(): that path did a full page load.
+  assert.ok(!String(executedScripts[1].func).includes('.click()'));
+});
+
+test('an answered panToLocation message means no fallback navigation', async () => {
+  const tab = { id: 7, windowId: 2, url: 'https://www.google.com/maps/' };
+  const context = vm.createContext({
+    URL,
+    console,
+    chrome: {
+      tabs: {
+        query: async () => [tab],
+        sendMessage: async () => ({ success: true }),
+        update: async () => assert.fail('no tab update')
+      },
+      scripting: { executeScript: async () => assert.fail('no scripting fallback') }
+    }
+  });
+  const hStart = source.indexOf('async function handlePanToWaypoint');
+  const hEnd = source.indexOf('// ==========================================', hStart);
+  vm.runInContext(source.slice(hStart, hEnd), context);
+  const result = await vm.runInContext('handlePanToWaypoint({ name: "X", mapsUrl: "https://www.google.com/maps/place/X/@1,2,17z" })', context);
+  assert.equal(result.panned, true);
 });

@@ -175,6 +175,17 @@ function isGoogleMapsUrl(url) {
   }
 }
 
+// MAIN-world pin positioning + in-page navigation (see map-hook.js).
+// Declared in the manifest for new pages; injected here for tabs that were
+// open before the extension was installed or reloaded. Idempotent.
+async function injectMapHook(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    files: ["pin-math.js", "map-hook.js"]
+  });
+}
+
 async function ensureMapsContentScript(tabId) {
   try {
     const [{ result: alreadyInjected = false } = {}] = await chrome.scripting.executeScript({
@@ -187,6 +198,7 @@ async function ensureMapsContentScript(tabId) {
     });
     if (alreadyInjected) return;
 
+    await injectMapHook(tabId);
     await chrome.scripting.insertCSS({
       target: { tabId },
       files: ["content.css"]
@@ -288,30 +300,22 @@ async function handlePanToWaypoint(wp) {
     }
   } catch (_) {}
 
-  // 2. Fallback: Execute in-page click script directly in tab
+  // 2. Content script unreachable (e.g. tab predates an extension reload):
+  //    navigate in-page through the MAIN-world map hook.
   try {
+    await injectMapHook(targetTab.id);
     await chrome.scripting.executeScript({
       target: { tabId: targetTab.id },
-      func: (path, name) => {
-        try {
-          if (path) {
-            const a = document.createElement("a");
-            a.href = path;
-            a.style.display = "none";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-          }
-          return { success: true };
-        } catch (e) {
-          return { success: false, error: e.message };
-        }
+      world: "MAIN",
+      func: (path, lat, lng) => {
+        window.postMessage({ type: "GREENOIL_NAVIGATE", path, lat, lng }, "*");
+        return { success: true };
       },
-      args: [targetPath, wp.name || ""]
+      args: [targetPath, wp.latitude ?? null, wp.longitude ?? null]
     });
     return { success: true, panned: true };
   } catch (err) {
-    console.warn("[GreenOil] In-page script failed, falling back to tab update:", err);
+    console.warn("[GreenOil] In-page navigation failed, falling back to tab update:", err);
   }
 
   // 3. Last resort fallback: Hard tab navigation
@@ -894,18 +898,13 @@ function isPlaceMatch(w, q) {
         return;
       }
 
-      // 8b. Inject the camera bridge into the page's MAIN world so the
-      // content script receives live map-camera updates (one-time per tab;
-      // the bridge script itself is idempotent).
-      if (message.action === "injectCameraBridge") {
+      // 8b. Inject the MAIN-world map hook into a tab that was open before
+      // the extension loaded (the hook itself is idempotent).
+      if (message.action === "injectMapHook") {
         const tabId = sender?.tab?.id;
         if (tabId) {
           try {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              world: "MAIN",
-              files: ["camera-bridge.js"],
-            });
+            await injectMapHook(tabId);
             sendResponse({ success: true });
           } catch (err) {
             sendResponse({ success: false, error: err.message });

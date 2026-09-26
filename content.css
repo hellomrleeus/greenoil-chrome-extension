@@ -571,21 +571,21 @@
 }
 
 /* ===================================================
-   Native-aligned Waypoint Pins on Map Canvas
-   (rAF camera-interpolated positioning, 0 click interception)
-   NOTE: z-index stays BELOW Google's floating panels/search UI so pins
-   never paint over the side panel; the map canvas itself is z-index auto.
+   Waypoint / MIS pins on the map
+   The overlay is mounted INSIDE Google's map container, right after the
+   map canvas (see content.js ensurePinLayer), so Google's side panel,
+   search box and controls stack above it and the container's
+   overflow:hidden clips pins to the map. map-hook.js writes each pin's
+   translate3d() in the same frame Google draws the map.
    =================================================== */
 
 #greenoil-waypoint-pins-overlay {
-  position: fixed !important;
+  position: absolute !important;
   inset: 0 !important;
-  width: 100vw !important;
-  height: 100vh !important;
   pointer-events: none !important;
-  z-index: 2 !important;
   overflow: hidden !important;
   user-select: none !important;
+  contain: strict !important;
 }
 
 #greenoil-waypoint-pin-layer {
@@ -594,25 +594,24 @@
   pointer-events: none !important;
 }
 
+/* Pin root = the anchor point (0x0). Hidden until map-hook.js places it. */
 .greenoil-waypoint-map-pin {
   position: absolute !important;
   left: 0 !important;
   top: 0 !important;
-  width: 32px !important;
-  height: 42px !important;
-  /* NOTE: JS sets the full transform each frame
-     (translate3d(x,y,0) translate(-50%,-100%)); keep stylesheet neutral. */
+  width: 0 !important;
+  height: 0 !important;
+  visibility: hidden;
   pointer-events: none !important;
   user-select: none !important;
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: center !important;
   will-change: transform !important;
-  transition: opacity 0.15s ease !important;
 }
 
+/* Tip of the 30x38 pin sits exactly on the anchor. */
 .greenoil-pin-body {
-  position: relative !important;
+  position: absolute !important;
+  left: -15px !important;
+  top: -38px !important;
   width: 30px !important;
   height: 38px !important;
   filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4)) !important;

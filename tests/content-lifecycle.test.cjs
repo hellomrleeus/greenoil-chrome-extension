@@ -11,7 +11,7 @@ function boot(sharedDocument) {
   const attributes = new Map();
   const document = sharedDocument || {
     readyState: 'complete', hidden: false,
-    documentElement: {setAttribute: (k,v) => attributes.set(k,v), getAttribute: k => attributes.get(k), removeAttribute: k => attributes.delete(k)},
+    documentElement: {setAttribute: (k,v) => attributes.set(k,v), getAttribute: k => attributes.get(k), hasAttribute: k => attributes.has(k), removeAttribute: k => attributes.delete(k)},
     addEventListener: (type, fn, options) => listeners.push({type, fn, options}),
     querySelector: () => null, querySelectorAll: () => [], getElementById: () => null,
   };
@@ -28,7 +28,7 @@ function boot(sharedDocument) {
 }
 test('full content script boots and performs only local extension reads on Maps load', () => {
   const f = boot();
-  assert.deepEqual(f.messages.map(m => m.action), ['getActiveTheme', 'injectCameraBridge', 'getRouteWaypoints']);
+  assert.deepEqual(f.messages.map(m => m.action), ['getActiveTheme', 'injectMapHook', 'getRouteWaypoints']);
   for (const callback of [...f.intervals.values()]) callback();
   vm.runInContext(source, f.context); // duplicate injection must not add timers
   assert.equal(f.intervals.size, 1);
