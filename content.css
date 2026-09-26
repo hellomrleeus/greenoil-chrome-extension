@@ -282,9 +282,23 @@
 }
 
 .greenoil-control-pill.mis-pill {
-  background: #f0fdf4;
-  color: #166534;
-  border-color: #bbf7d0;
+  background: #eef2ff;
+  color: #3730a3;
+  border-color: #c7d2fe;
+}
+
+.greenoil-control-pill.explore-pill {
+  background: #f3f4f6;
+  color: #374151;
+  border-color: #e5e7eb;
+  cursor: default;
+}
+
+.greenoil-control-pill.fried-pill {
+  background: #fffbeb;
+  color: #92400e;
+  border-color: #fde68a;
+  cursor: default;
 }
 
 .greenoil-control-clear {
@@ -653,9 +667,65 @@
   user-select: none !important;
 }
 
-/* MIS match pins: indigo glow ring to distinguish from waypoint pins */
-.greenoil-mis-map-pin .greenoil-pin-body {
+/* ---------------------------------------------------
+   探索 pins: grey -> yellow (fried) -> indigo shield (MIS)
+   --------------------------------------------------- */
+
+.greenoil-pin-group {
+  position: absolute !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Each group is its own stacking layer: route waypoints always on top. */
+#greenoil-pins-explore { z-index: 1 !important; }
+#greenoil-pins-route { z-index: 2 !important; }
+
+.greenoil-explore-pin { z-index: 1; }
+.greenoil-explore-pin[data-state="fried"] { z-index: 2; }
+.greenoil-explore-pin[data-state="mis"] { z-index: 3; }
+
+/* A place on the route shows only its waypoint pin. */
+.greenoil-explore-pin.greenoil-explore-shadowed {
+  display: none !important;
+}
+
+.greenoil-explore-fill {
+  transition: fill 0.35s ease;
+}
+
+.greenoil-explore-pin[data-state="mis"] .greenoil-pin-body {
   filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 5px rgba(79, 70, 229, 0.6)) !important;
+}
+
+/* Rises out of the map: grows from its tip with a small overshoot. */
+.greenoil-explore-rise {
+  transform-origin: 50% 100%;
+  animation: greenoil-pin-rise 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes greenoil-pin-rise {
+  0% { opacity: 0; transform: translateY(10px) scale(0.1, 0); }
+  55% { opacity: 1; transform: translateY(-5px) scale(1.05, 1.12); }
+  80% { transform: translateY(1px) scale(0.98, 0.95); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* Colour change: a short hop so the update is noticeable. */
+.greenoil-explore-bump {
+  transform-origin: 50% 100%;
+  animation: greenoil-pin-bump 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes greenoil-pin-bump {
+  0% { transform: none; }
+  40% { transform: translateY(-7px) scale(1.18); }
+  100% { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .greenoil-explore-rise,
+  .greenoil-explore-bump { animation: none; }
 }
 
 /* ===================================================

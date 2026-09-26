@@ -349,13 +349,18 @@ async function rateLimitMisRequest() {
   _lastMisRequestTime = Date.now();
 }
 
-// ---- Local MIS result cache (chrome.storage.local) ----
-// MIS customer records are company data: they are only read while the MIS
-// login is valid and are wiped as soon as a logout is detected (see
-// checkMisAuth).
-const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const MIS_CACHE_KEY = "gce_mis_cache";          // {keyword: {t, records}}
+// ---- Local result caches (chrome.storage.local) ----
+// Only positive results are cached ("matched" places): an MIS customer
+// matched to a Google place, and places jev judged to serve fried food.
+// Places without a match are re-checked on the next 探索.
+// MIS customer records are company data: only read while the MIS login is
+// valid, wiped as soon as a logout is detected (see checkMisAuth).
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;          // 30 days
+const MIS_CACHE_KEY = "gce_mis_match_cache";              // {placeId: {t, customer}}
+const LEGACY_MIS_CACHE_KEY = "gce_mis_cache";             // old per-keyword cache
+const FRIED_CACHE_KEY = "gce_fried_cache";                // {placeId: {t}}
 const MIS_CACHE_MAX = 3000;
+const FRIED_CACHE_MAX = 5000;
 
 async function readCache(key) {
   const data = await chrome.storage.local.get(key);
@@ -377,7 +382,14 @@ function pruneCache(map, max, now) {
 }
 
 async function clearMisCache() {
-  await chrome.storage.local.remove(MIS_CACHE_KEY);
+  await chrome.storage.local.remove([MIS_CACHE_KEY, LEGACY_MIS_CACHE_KEY]);
+}
+
+async function cachePositive(key, placeId, value, max) {
+  const now = Date.now();
+  const map = await readCache(key);
+  map[placeId] = { t: now, ...value };
+  await chrome.storage.local.set({ [key]: pruneCache(map, max, now) });
 }
 
 /**
@@ -426,72 +438,44 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
   }
 });
 
-/**
- * Extract street address prefix for MIS matching, e.g. "3601 Victoria Park Ave"
- */
-function extractStreetPrefix(raw) {
-  if (!raw || typeof raw !== "string") return "";
-  let addr = raw.trim();
+// ---- 探索: per-place MIS matching ----
+// The page (google-places.js) finds every restaurant in the map window and
+// asks, place by place, whether it is an MIS customer. A place with a house
+// number is looked up by "number + street"; otherwise by its English name.
+// The MIS hits are then tied to THIS place: same unit number, or a name
+// match, or the only customer at a single-tenant address.
 
-  // If address has commas, take the first segment
-  let part = addr.split(",")[0].trim();
-
-  // Strip Unit/Suite/# prefixes e.g. "Unit 3 - 3601 Victoria Park Ave" -> "3601 Victoria Park Ave"
-  part = part.replace(/^(?:unit|ste|suite|#)\s*[\w\d-]+\s*[-–,]\s*/i, "").trim();
-
-  // Strip trailing unit e.g. "3601 Victoria Park Ave Unit 12" -> "3601 Victoria Park Ave"
-  part = part.replace(/\s+(?:unit|ste|suite|#|bldg|building)\s*[\w\d-]+$/i, "").trim();
-
-  // Match house number + street words, e.g. "3601 Victoria Park Ave"
-  const m = part.match(/^(\d+[\w-]*\s+[A-Za-z0-9\s.]+)/);
-  if (m) {
-    const words = m[1].trim().split(/\s+/).slice(0, 5).join(" ");
-    return words;
-  }
-
-  return part;
-}
-
-// ---- Nearby food places ----
-// Collected in the Maps page from Google Maps itself (google-places.js) for
-// the current map window and sent with the scanAndMatchMis message.
-
-const MAX_CANDIDATES = 60;
-
-// English store name: the whole name if Latin, else its longest Latin run.
-function englishName(name) {
-  const n = String(name || "").replace(/’/g, "'").replace(/\s+/g, " ").trim();
-  if (n.length >= 3 && /^[\x20-\x7EÀ-ɏ]+$/.test(n) && /[A-Za-z]/.test(n)) return n;
-  const runs = n.match(/[A-Za-zÀ-ɏ][A-Za-z0-9À-ɏ '&.-]*[A-Za-z0-9.]/g) || [];
-  const best = runs.map(r => r.trim()).sort((a, b) => b.length - a.length)[0] || "";
-  return best.replace(/[^A-Za-z]/g, "").length >= 4 ? best : "";
-}
-
-/** Candidates arrive from the page: keep only well-formed ones. */
-function sanitizeCandidates(list) {
-  if (!Array.isArray(list)) return [];
+// Place fields arrive from the page: keep only well-formed ones.
+function sanitizeExplorePlace(p) {
+  if (!p || typeof p.placeId !== "string" || typeof p.name !== "string") return null;
   const str = (v, max = 200) => (typeof v === "string" ? v.slice(0, max) : "");
-  return list.slice(0, MAX_CANDIDATES).filter(c =>
-    c && typeof c.name === "string" && Number.isFinite(c.latitude) && Number.isFinite(c.longitude)
-  ).map(c => ({
-    name: str(c.name),
-    englishName: str(c.englishName),
-    street: str(c.street),
-    streetPrefix: str(c.streetPrefix),
-    displayName: str(c.displayName, 300),
-    category: str(c.category),
-    placeId: str(c.placeId, 80),
-    latitude: c.latitude,
-    longitude: c.longitude,
-    distanceKm: Number.isFinite(c.distanceKm) ? c.distanceKm : 0
-  }));
+  const list = (v, n, max) => (Array.isArray(v) ? v.filter(x => typeof x === "string").slice(0, n).map(x => x.slice(0, max)) : []);
+  return {
+    placeId: str(p.placeId, 80),
+    name: str(p.name),
+    englishName: str(p.englishName),
+    street: str(p.street),
+    streetPrefix: str(p.streetPrefix),
+    displayName: str(p.displayName, 300),
+    categories: list(p.categories, 10, 80),
+    description: str(p.description, 600),
+    ownerDescription: str(p.ownerDescription, 600),
+    reviews: list(p.reviews, 5, 300),
+    latitude: Number.isFinite(p.latitude) ? p.latitude : null,
+    longitude: Number.isFinite(p.longitude) ? p.longitude : null
+  };
 }
 
-// ---- MIS query planning ----
-// Places with a house number are searched by "number + street"; places
-// without one by their English name. A name search on a chain ("Subway")
-// returns every branch, so its hits are narrowed to the same street when
-// the place has one, and otherwise only accepted when unambiguous.
+/** How to look this place up in MIS: {kind, keyword} or null. */
+function misQueryFor(place) {
+  if (place.streetPrefix && /^\d/.test(place.streetPrefix)) {
+    return { kind: "address", keyword: place.streetPrefix };
+  }
+  if (place.englishName && place.englishName.trim().length >= 3) {
+    return { kind: "name", keyword: place.englishName.trim() };
+  }
+  return null;
+}
 
 const NAME_MATCH_MAX_HITS = 3;
 
@@ -504,34 +488,59 @@ function normalizeStreetKey(street) {
     .trim();
 }
 
-/** candidates -> [{kind: "address"|"name", keyword, candidates: [...]}] */
-function planMisQueries(candidates) {
-  const plans = new Map();
-  for (const c of candidates) {
-    let kind = "";
-    let keyword = "";
-    if (c.streetPrefix && /^\d/.test(c.streetPrefix)) {
-      kind = "address";
-      keyword = c.streetPrefix;
-    } else if (c.englishName) {
-      kind = "name";
-      keyword = c.englishName;
-    }
-    if (keyword.trim().length < 3) continue;
-    const key = `${kind}:${keyword.toLowerCase()}`;
-    if (!plans.has(key)) plans.set(key, { kind, keyword, candidates: [] });
-    plans.get(key).candidates.push(c);
-  }
-  return [...plans.values()];
-}
-
-/** Narrow a name search's MIS hits to the candidate's own location. */
-function filterNameHits(records, candidate) {
-  const streetKey = normalizeStreetKey(candidate.street);
+/** Narrow a name search's MIS hits to the place's own street. */
+function filterNameHits(records, place) {
+  const streetKey = normalizeStreetKey(place.street);
   if (streetKey) {
     return records.filter(r => normalizeStreetKey(r.address).includes(streetKey));
   }
   return records.length <= NAME_MATCH_MAX_HITS ? records : [];
+}
+
+const NAME_STOPWORDS = new Set(["the", "and", "of", "restaurant", "restaurants", "inc", "ltd", "limited", "co", "corp", "corporation", "company", "cuisine", "kitchen", "food", "foods"]);
+
+function nameTokens(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .split(/[^a-z0-9一-鿿]+/)
+    .filter(t => t.length >= 2 && !NAME_STOPWORDS.has(t));
+}
+
+/** Overlap coefficient of the two names' significant words (0..1). */
+function nameScore(a, b) {
+  const A = new Set(nameTokens(a));
+  const B = new Set(nameTokens(b));
+  if (!A.size || !B.size) return 0;
+  let common = 0;
+  for (const t of A) if (B.has(t)) common++;
+  return common / Math.min(A.size, B.size);
+}
+
+/** "3601 Victoria Park Ave #121" / "Unit 121" / "Suite K" -> "121" / "k" */
+function unitOf(address) {
+  const m = String(address || "").split(",")[0].match(/(?:#|\b(?:unit|uinit|ste|suite)\s*#?)\s*([a-z0-9-]+)/i);
+  return m ? m[1].toLowerCase() : "";
+}
+
+/** The MIS customer that is this Google place, or null. */
+function pickMisRecordForPlace(records, place, kind) {
+  let pool = (records || []).filter(r => r && r.code);
+  if (kind === "name") pool = filterNameHits(pool, place);
+  if (!pool.length) return null;
+  const placeUnit = unitOf(place.displayName);
+  const scored = pool.map(r => ({
+    r,
+    unit: Boolean(placeUnit) && unitOf(r.address) === placeUnit,
+    name: Math.max(nameScore(r.name, place.englishName), nameScore(r.name, place.name))
+  }));
+  scored.sort((a, b) => (b.unit - a.unit) || (b.name - a.name) ||
+    ((b.r.sts === "A") - (a.r.sts === "A")));
+  const best = scored[0];
+  if (best.unit || best.name >= 0.5) return best.r;
+  // Single customer at an address without units (standalone building).
+  if (kind === "address" && pool.length === 1 && !placeUnit && !unitOf(best.r.address)) return best.r;
+  return null;
 }
 
 /**
@@ -609,142 +618,200 @@ async function queryMisPrefix(prefix, phpsessid) {
   }
 }
 
-/**
- * Silent scan & match MIS customers around a center coordinate
- */
-async function handleScanAndMatchMis(param, sender) {
-  const { lat, lng, placeName, placeAddress, forceRefresh } = param || {};
-  if (typeof lat !== "number" || typeof lng !== "number") {
-    return { success: false, error: "缺少地点坐标" };
-  }
+// ---- 探索 sessions & queues ----
+// MIS: one serial queue, strictly 1 request per second (rateLimitMisRequest).
+// A keyword's MIS answer is memoized in memory for the session (several
+// places can share an address); only matches reach chrome.storage.
+let _misChain = Promise.resolve();
+const _cancelledSessions = new Set();
+const _misKeywordMemo = new Map(); // keyword -> {t, records}
+const MIS_MEMO_TTL_MS = 10 * 60 * 1000;
 
-  // 1. Check MIS auth status (fresh: cached customer data is login-gated)
+function enqueueMis(job) {
+  const run = _misChain.then(job);
+  _misChain = run.catch(() => {});
+  return run;
+}
+
+async function misRecordsFor(query, phpsessid) {
+  const key = `${query.kind}:${query.keyword.toLowerCase()}`;
+  const memo = _misKeywordMemo.get(key);
+  if (memo && Date.now() - memo.t < MIS_MEMO_TTL_MS) return memo.records;
+  await rateLimitMisRequest();
+  const records = await queryMisPrefix(query.keyword, phpsessid);
+  if (records) _misKeywordMemo.set(key, { t: Date.now(), records });
+  return records;
+}
+
+/** {customer} when the place is an MIS customer, {customer: null} otherwise. */
+async function handleExploreMatchMis(message) {
+  const place = sanitizeExplorePlace(message.place);
+  if (!place) return { success: false, error: "bad place" };
   const auth = await checkMisAuth(true);
-  if (!auth.loggedIn) {
-    return { success: false, notLoggedIn: true, error: "未登录 MIS 内部系统" };
-  }
+  if (!auth.loggedIn) return { success: false, notLoggedIn: true };
 
-  const phpsessidCookie = await chrome.cookies.get({
-    url: "https://mis.greenoilinc.com",
-    name: "PHPSESSID"
+  if (!message.forceRefresh) {
+    const hit = freshEntry((await readCache(MIS_CACHE_KEY))[place.placeId], Date.now());
+    if (hit) return { success: true, customer: hit.customer, cached: true };
+  }
+  const query = misQueryFor(place);
+  if (!query) return { success: true, customer: null };
+
+  return enqueueMis(async () => {
+    if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
+    const phpsessid = (await chrome.cookies.get({ url: "https://mis.greenoilinc.com", name: "PHPSESSID" }))?.value || "";
+    const records = await misRecordsFor(query, phpsessid);
+    if (!records) return { success: false, error: "MIS 查询失败" };
+    const rec = pickMisRecordForPlace(records, place, query.kind);
+    if (!rec) return { success: true, customer: null };
+    const customer = {
+      ...rec,
+      latitude: place.latitude,
+      longitude: place.longitude,
+      placeId: place.placeId,
+      matchedBy: query.kind,
+      matchedPrefix: query.keyword,
+      matchedCandidateName: place.name
+    };
+    // Persist only while still logged in (a logout mid-scan wipes the cache).
+    if ((await checkMisAuth(true)).loggedIn) {
+      await cachePositive(MIS_CACHE_KEY, place.placeId, { customer }, MIS_CACHE_MAX);
+    }
+    return { success: true, customer };
   });
-  const phpsessid = phpsessidCookie?.value || "";
+}
 
-  const now = Date.now();
+// ---- 探索: fried-food judgement with the jev model ----
+// Places are batched (JEV_BATCH_SIZE per call, one call at a time). The
+// key comes from the Green Oil Worker (/api/jev/key, needs the operator's
+// login token saved by the popup).
+//
+// TODO(jev): fill JEV_API once the jev endpoint / request format is known.
+// Until then classification is reported as disabled and pins stay grey
+// (MIS matching is unaffected).
+const JEV_API = {
+  url: "",   // e.g. "https://…/v1/chat/completions"
+  model: ""
+};
+const JEV_BATCH_SIZE = 8;
+const JEV_BATCH_WAIT_MS = 700;
+let _jevKey = null;
+let _jevChain = Promise.resolve();
+const _jevPending = [];
+let _jevTimer = null;
 
-  // 2. The nearest places in the current Google Maps window (from the page)
-  const nearbyRestaurants = sanitizeCandidates(param.candidates);
+// A different (or no) operator login invalidates the fetched key.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.authToken) _jevKey = null;
+});
 
-  // 3. Candidates: the clicked place first, then the nearby places
-  const candidates = [];
-  if (placeName && placeAddress) {
-    const prefix = extractStreetPrefix(placeAddress);
-    candidates.push({
-      name: placeName,
-      englishName: englishName(placeName),
-      street: prefix.replace(/^\d+[\w-]*\s+/, ""),
-      streetPrefix: /^\d/.test(prefix) ? prefix : "",
-      displayName: placeAddress,
-      latitude: lat,
-      longitude: lng,
-      distanceKm: 0
-    });
-  }
-  for (const r of nearbyRestaurants) {
-    const dup = candidates.some(c => c.name.toLowerCase() === r.name.toLowerCase() &&
-      getHaversineDistKm(c.latitude, c.longitude, r.latitude, r.longitude) < 0.03);
-    if (!dup) candidates.push(r);
-  }
+async function getJevKey() {
+  if (_jevKey) return _jevKey;
+  const { authToken } = await chrome.storage.local.get("authToken");
+  if (!authToken) throw new Error("请先在扩展中登录 Green Oil 账号");
+  const resp = await fetch(`${WORKER_URL}/api/jev/key`, { headers: { Authorization: `Bearer ${authToken}` } });
+  const data = await resp.json().catch(() => ({}));
+  const key = data.key || data.apiKey || data.data?.key;
+  if (!resp.ok || !key) throw new Error(data.message || data.error || "获取 JEV Key 失败");
+  _jevKey = key;
+  return key;
+}
 
-  // 4. One MIS query per unique address prefix / English name
-  const plans = planMisQueries(candidates);
-
-  // 5. Query MIS (cache first), throttled strictly to 1 request per second
-  const misCache = await readCache(MIS_CACHE_KEY);
-  let misCacheDirty = false;
-  let cachedQueries = 0;
-  const matchedCustomers = [];
-  const seenCodes = new Set();
-  let currentIdx = 0;
-  const totalPrefixes = plans.length;
-
-  for (const plan of plans) {
-    currentIdx++;
-    const prefix = plan.keyword;
-    const candList = plan.candidates;
-
-    // Broadcast real-time progress to caller tab (e.g. 1/6, 2/6...)
-    if (sender?.tab?.id) {
-      chrome.tabs.sendMessage(sender.tab.id, {
-        action: "misMatchProgress",
-        current: currentIdx,
-        total: totalPrefixes,
-        prefix
-      }).catch(() => {});
+function friedPrompt(places) {
+  return [
+    {
+      role: "system",
+      content:
+        "You help a used-cooking-oil collection company. For each restaurant decide whether it " +
+        "very likely serves DEEP-FRIED food (fried chicken, fries, tempura, fish & chips, spring " +
+        "rolls, deep-fried dim sum, wings, etc.), i.e. operates a deep fryer. Stir-frying alone " +
+        "does not count. Use only the given text. Reply with JSON only: " +
+        '{"results":[{"id":"<id>","fried":true|false}]}'
+    },
+    {
+      role: "user",
+      content: JSON.stringify(places.map(p => ({
+        id: p.placeId,
+        name: p.name,
+        categories: p.categories,
+        description: p.description,
+        owner_description: p.ownerDescription,
+        reviews: p.reviews
+      })))
     }
+  ];
+}
 
-    const cacheKey = `${plan.kind}:${prefix.toLowerCase()}`;
-    const cached = !forceRefresh && freshEntry(misCache[cacheKey], now);
-    let records;
-    if (cached) {
-      records = cached.records;
-      cachedQueries++;
-    } else {
-      // Strict throttle: 1 request per second
-      await rateLimitMisRequest();
-      records = await queryMisPrefix(prefix, phpsessid);
-      if (records) {
-        misCache[cacheKey] = { t: Date.now(), records };
-        misCacheDirty = true;
-      } else {
-        records = [];
-      }
-    }
-    // [record, candidate it belongs to]. Name hits are tied to the branch
-    // whose street they matched.
-    const hits = plan.kind === "name"
-      ? candList.flatMap(cand => filterNameHits(records, cand).map(rec => [rec, cand]))
-      : records.map(rec => [rec, null]);
-    for (const [rec, hitCand] of hits) {
-      if (!rec.code || seenCodes.has(rec.code)) continue;
-      seenCodes.add(rec.code);
+/** Map placeId -> boolean from a jev reply (tolerates ```json fences). */
+function parseFriedReply(text) {
+  const m = String(text || "").match(/\{[\s\S]*\}/);
+  const out = new Map();
+  if (!m) return out;
+  let data;
+  try { data = JSON.parse(m[0]); } catch (_) { return out; }
+  for (const r of Array.isArray(data.results) ? data.results : []) {
+    if (r && typeof r.id === "string" && typeof r.fried === "boolean") out.set(r.id, r.fried);
+  }
+  return out;
+}
 
-      // Associate best coordinate from candidate list
-      let bestCand = hitCand || candList[0] || candidates[0];
-      const recAddr = rec.address.toLowerCase();
-      for (const cand of hitCand ? [] : candList) {
-        if (cand.displayName && (cand.displayName.toLowerCase().includes(recAddr) || recAddr.includes(cand.displayName.toLowerCase()))) {
-          bestCand = cand;
-          break;
+async function callJev(messages) {
+  if (!JEV_API.url) {
+    const err = new Error("jev 模型尚未配置");
+    err.disabled = true;
+    throw err;
+  }
+  const key = await getJevKey();
+  const resp = await fetch(JEV_API.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model: JEV_API.model, messages, temperature: 0 }),
+    signal: AbortSignal.timeout(60000)
+  });
+  if (resp.status === 401) _jevKey = null;
+  if (!resp.ok) throw new Error(`jev HTTP ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || "";
+}
+
+function flushJev() {
+  _jevTimer = null;
+  while (_jevPending.length) {
+    const batch = _jevPending.splice(0, JEV_BATCH_SIZE);
+    const live = batch.filter(j => !_cancelledSessions.has(j.sessionId));
+    batch.filter(j => !live.includes(j)).forEach(j => j.resolve({ success: false, cancelled: true }));
+    if (!live.length) continue;
+    const run = _jevChain.then(async () => {
+      try {
+        const verdicts = parseFriedReply(await callJev(friedPrompt(live.map(j => j.place))));
+        for (const j of live) {
+          const fried = verdicts.has(j.place.placeId) ? verdicts.get(j.place.placeId) : null;
+          if (fried === true) await cachePositive(FRIED_CACHE_KEY, j.place.placeId, {}, FRIED_CACHE_MAX);
+          j.resolve({ success: fried !== null, fried });
         }
+      } catch (err) {
+        live.forEach(j => j.resolve({ success: false, disabled: Boolean(err.disabled), error: err.message }));
       }
-
-      matchedCustomers.push({
-        ...rec,
-        latitude: bestCand ? bestCand.latitude : lat,
-        longitude: bestCand ? bestCand.longitude : lng,
-        matchedPrefix: prefix,
-        matchedBy: plan.kind,
-        matchedCandidateName: bestCand ? bestCand.name : ""
-      });
-    }
+    });
+    _jevChain = run.catch(() => {});
   }
+}
 
-  // Persist only while still logged in (a logout mid-scan wipes the cache).
-  if (misCacheDirty && (await checkMisAuth(true)).loggedIn) {
-    await chrome.storage.local.set({ [MIS_CACHE_KEY]: pruneCache(misCache, MIS_CACHE_MAX, Date.now()) });
+/** {fried: true|false} for one place (batched with others). */
+async function handleExploreClassifyFried(message) {
+  const place = sanitizeExplorePlace(message.place);
+  if (!place) return { success: false, error: "bad place" };
+  if (!message.forceRefresh) {
+    const hit = freshEntry((await readCache(FRIED_CACHE_KEY))[place.placeId], Date.now());
+    if (hit) return { success: true, fried: true, cached: true };
   }
-
-  const { activeRoute } = await getOrInitColorRoutes();
-
-  return {
-    success: true,
-    matches: matchedCustomers,
-    totalScanned: candidates.length,
-    totalQueries: totalPrefixes,
-    cachedQueries,
-    activeRoute
-  };
+  // Probe only: lets the page skip the detail-page request for cached places.
+  if (message.cacheOnly) return { success: true, fried: null, miss: true };
+  return new Promise((resolve) => {
+    _jevPending.push({ sessionId: message.sessionId, place, resolve });
+    if (_jevPending.length >= JEV_BATCH_SIZE) flushJev();
+    else if (!_jevTimer) _jevTimer = setTimeout(flushJev, JEV_BATCH_WAIT_MS);
+  });
 }
 
 // Runtime Message Dispatcher
@@ -998,10 +1065,18 @@ function isPlaceMatch(w, q) {
         return;
       }
 
-      // 10. Silent scan & match MIS customers around given place
-      if (message.action === "scanAndMatchMis") {
-        const matchResult = await handleScanAndMatchMis(message, sender);
-        sendResponse(matchResult);
+      // 10. 探索: per-place MIS match / fried-food judgement / cancel
+      if (message.action === "exploreMatchMis") {
+        sendResponse(await handleExploreMatchMis(message));
+        return;
+      }
+      if (message.action === "exploreClassifyFried") {
+        sendResponse(await handleExploreClassifyFried(message));
+        return;
+      }
+      if (message.action === "exploreCancel") {
+        if (message.sessionId) _cancelledSessions.add(message.sessionId);
+        sendResponse({ success: true });
         return;
       }
 

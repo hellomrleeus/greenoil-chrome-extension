@@ -117,20 +117,7 @@ if (window.__greenoil_injected__) {
           isMisAuthChecked = true;
           isMisLoggedIn = Boolean(message.auth.loggedIn);
           const misContainer = document.getElementById("greenoil-match-mis-btn");
-          const misBtn = misContainer?.querySelector("button");
-          if (misContainer && misBtn) {
-            if (isMisLoggedIn) {
-              misContainer.classList.remove("greenoil-mis-disabled");
-              misContainer.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-              misBtn.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-              misBtn.setAttribute("aria-label", "匹配MIS");
-            } else {
-              misContainer.classList.add("greenoil-mis-disabled");
-              misContainer.title = "请先登录 MIS 内部系统 (点击前往登录)";
-              misBtn.title = "请先登录 MIS 内部系统 (点击前往登录)";
-              misBtn.setAttribute("aria-label", "请先登录 MIS 内部系统 (点击前往登录)");
-            }
-          }
+          if (misContainer) setExploreButtonAuth(misContainer, isMisLoggedIn);
         }
 
         if (message.action === "didPanToWaypoint" && message.waypoint) {
@@ -149,16 +136,6 @@ if (window.__greenoil_injected__) {
           sendResponse({ success: true });
         }
 
-        if (message.action === "renderMisMatches" && Array.isArray(message.matches)) {
-          renderMisPins(message.matches);
-        }
-
-        if (message.action === "misMatchProgress") {
-          const misLabel = document.querySelector("#greenoil-match-mis-btn .greenoil-action-label");
-          if (misLabel && message.total) {
-            misLabel.textContent = `匹配中 (${message.current}/${message.total})`;
-          }
-        }
       });
     }
 
@@ -194,9 +171,6 @@ if (window.__greenoil_injected__) {
     });
 
     listen(window, "message", (event) => {
-      if (event.data?.type === "GREENOIL_RENDER_MIS_MATCHES" && Array.isArray(event.data.matches)) {
-        renderMisPins(event.data.matches);
-      }
       if (event.data?.type === "GREENOIL_OPEN_MIS_MODAL" && event.data.customer) {
         openMisModal(event.data.customer);
       }
@@ -282,14 +256,21 @@ if (window.__greenoil_injected__) {
       layer.id = "greenoil-waypoint-pin-layer";
       overlay.appendChild(layer);
     }
+    // 探索 pins below, route waypoints on top (waypoint > MIS > fried > grey).
+    for (const id of ["greenoil-pins-explore", "greenoil-pins-route"]) {
+      if (!document.getElementById(id)) {
+        const group = document.createElement("div");
+        group.id = id;
+        group.className = "greenoil-pin-group";
+        layer.appendChild(group);
+      }
+    }
     return overlay.isConnected ? layer : null;
   }
 
   function makePin(lat, lng, kind, color, innerHtml) {
     const pin = document.createElement("div");
-    pin.className = kind === "mis"
-      ? "greenoil-waypoint-map-pin greenoil-mis-map-pin"
-      : "greenoil-waypoint-map-pin";
+    pin.className = "greenoil-waypoint-map-pin";
     pin.dataset.kind = kind;
     pin.dataset.greenoilLat = String(lat);
     pin.dataset.greenoilLng = String(lng);
@@ -304,6 +285,8 @@ if (window.__greenoil_injected__) {
     return pin;
   }
 
+  // Route waypoints (rebuilt whenever the route changes). 探索 pins live in
+  // their own group and are updated in place (see the 探索 section).
   function rebuildPinElements() {
     const layer = ensurePinLayer();
     if (!layer) return;
@@ -318,17 +301,358 @@ if (window.__greenoil_injected__) {
         `<span class="greenoil-pin-num" style="color:${themeColor}">${idx + 1}</span>`));
     });
 
-    currentMisMatches.forEach((m) => {
-      const lat = parseFloat(m.latitude);
-      const lng = parseFloat(m.longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-      frag.appendChild(makePin(lat, lng, "mis", "#4f46e5",
-        `<span class="greenoil-pin-shield">${SVG_MIS_SHIELD_SM}</span>`));
-    });
-
-    layer.replaceChildren(frag);
+    document.getElementById("greenoil-pins-route").replaceChildren(frag);
+    // Google may have rebuilt its map container (and our overlay with it):
+    // put the 探索 pins back.
+    const exploreGroup = document.getElementById("greenoil-pins-explore");
+    if (explore && exploreGroup && !exploreGroup.firstChild && explore.places.size) {
+      for (const entry of explore.places.values()) {
+        if (entry.el) {
+          entry.el.querySelector(".greenoil-pin-body")?.classList.remove("greenoil-explore-rise");
+          exploreGroup.appendChild(entry.el);
+        }
+      }
+    }
+    applyExploreShadowing();
     // Ask map-hook.js to position the new pins right away.
     window.dispatchEvent(new Event("greenoil:pins"));
+  }
+
+  // ==========================================
+  // 探索 — every restaurant in the map window at click time
+  //
+  //   grey pins rise from the map  ->  yellow when jev says it serves
+  //   deep-fried food  ->  MIS shield when it is an MIS customer.
+  //   Priority: waypoint > MIS > fried > grey (a place on the route shows
+  //   only its waypoint pin).
+  //
+  // The window is snapshotted at click time; panning/zooming afterwards
+  // does not change what is explored. Google requests: result pages paced
+  // by searchLimiter, detail pages 1/s by detailLimiter (independent of the
+  // MIS queue, which the background runs at 1/s).
+  // ==========================================
+
+  const EXPLORE_TITLE = "探索当前地图窗口内的餐馆：识别油炸餐馆并匹配 MIS 签约客户（Shift+点击忽略缓存）";
+  const SVG_EXPLORE = `<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-5.5-2.5 7.51-3.49L17.5 6.5 9.99 9.99 6.5 17.5zm5.5-6.6a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2z"/></svg>`;
+  const SVG_FLAME_SM = `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="#d97706" d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>`;
+  const EXPLORE_RANK = { candidate: 0, fried: 1, mis: 2 };
+  const EXPLORE_COLORS = { candidate: "#9ca3af", fried: "#f59e0b", mis: "#4f46e5" };
+
+  let explore = null;                  // current session
+  const placesApi = window.__greenoil_places;
+  const searchLimiter = placesApi ? placesApi.createRateLimiter(400) : null;
+  const detailLimiter = placesApi ? placesApi.createRateLimiter(1000) : null;
+
+  function bgMessage(msg) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(msg, (resp) => {
+          if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
+          else resolve(resp || {});
+        });
+      } catch (err) {
+        resolve({ success: false, error: err.message });
+      }
+    });
+  }
+
+  function exploreIconHtml(state) {
+    if (state === "mis") return `<span class="greenoil-pin-shield">${SVG_MIS_SHIELD_SM}</span>`;
+    if (state === "fried") return `<span class="greenoil-pin-shield">${SVG_FLAME_SM}</span>`;
+    return "";
+  }
+
+  function paintExplorePin(entry) {
+    const el = entry.el;
+    el.dataset.state = entry.state;
+    el.querySelector(".greenoil-explore-fill").setAttribute("fill", EXPLORE_COLORS[entry.state]);
+    el.querySelector(".greenoil-explore-icon").innerHTML = exploreIconHtml(entry.state);
+  }
+
+  function makeExplorePin(entry, order) {
+    const el = document.createElement("div");
+    el.className = "greenoil-waypoint-map-pin greenoil-explore-pin";
+    el.dataset.kind = "explore";
+    el.dataset.placeId = entry.place.placeId;
+    el.dataset.greenoilLat = String(entry.place.latitude);
+    el.dataset.greenoilLng = String(entry.place.longitude);
+    el.innerHTML = `
+      <div class="greenoil-pin-body greenoil-explore-rise" style="animation-delay:${Math.min(order * 35, 900)}ms">
+        <svg viewBox="0 0 30 38" class="greenoil-pin-svg" aria-hidden="true">
+          <path class="greenoil-explore-fill" d="M15 0C6.716 0 0 6.716 0 15c0 10.5 15 23 15 23s15-12.5 15-23c0-8.284-6.716-15-15-15z"/>
+          <circle cx="15" cy="14" r="9" fill="#ffffff"/>
+        </svg>
+        <span class="greenoil-explore-icon"></span>
+      </div>`;
+    entry.el = el;
+    paintExplorePin(entry);
+    return el;
+  }
+
+  // Never downgrade: MIS beats fried beats grey.
+  function setExploreState(entry, state, customer) {
+    if (EXPLORE_RANK[state] <= EXPLORE_RANK[entry.state]) return;
+    entry.state = state;
+    if (customer) entry.customer = customer;
+    if (!entry.el) return;
+    paintExplorePin(entry);
+    const body = entry.el.querySelector(".greenoil-pin-body");
+    body.classList.remove("greenoil-explore-bump");
+    void body.offsetWidth; // restart the animation
+    body.classList.add("greenoil-explore-bump");
+    if (state === "mis") syncMisMatches();
+    updatePinsControlBar();
+  }
+
+  const PLACE_ID_RE = /!1s(0x[0-9a-f]+:0x[0-9a-f]+)/i;
+
+  function isOnRoute(place) {
+    return currentRouteWaypoints.some((wp) => {
+      const id = String(wp.mapsUrl || "").match(PLACE_ID_RE)?.[1];
+      if (id && id === place.placeId) return true;
+      const lat = parseFloat(wp.latitude);
+      const lng = parseFloat(wp.longitude);
+      return Number.isFinite(lat) && Number.isFinite(lng) &&
+        getHaversineDistKm(lat, lng, place.latitude, place.longitude) < 0.02;
+    });
+  }
+
+  // A place that is a route waypoint shows only its waypoint pin.
+  function applyExploreShadowing() {
+    if (!explore) return;
+    for (const entry of explore.places.values()) {
+      if (entry.el) entry.el.classList.toggle("greenoil-explore-shadowed", isOnRoute(entry.place));
+    }
+  }
+
+  function syncMisMatches() {
+    currentMisMatches = explore
+      ? [...explore.places.values()].filter(e => e.state === "mis" && e.customer).map(e => e.customer)
+      : [];
+    const mainPanel = document.querySelector('div[role="main"]');
+    const currentPlace = mainPanel && extractPlaceData();
+    if (currentPlace) updateHeadingMisBadge(mainPanel, currentPlace);
+  }
+
+  function clearExplore() {
+    if (explore) {
+      explore.cancelled = true;
+      bgMessage({ action: "exploreCancel", sessionId: explore.id });
+    }
+    explore = null;
+    document.getElementById("greenoil-pins-explore")?.replaceChildren();
+    syncMisMatches();
+    updatePinsControlBar();
+  }
+
+  function exploreCounts() {
+    const c = { total: 0, fried: 0, mis: 0, pending: 0 };
+    if (!explore) return c;
+    for (const e of explore.places.values()) {
+      c.total++;
+      if (e.state === "fried") c.fried++;
+      if (e.state === "mis") c.mis++;
+    }
+    c.pending = explore.pending;
+    return c;
+  }
+
+  function updatePinsControlBar() {
+    let bar = document.getElementById("greenoil-pins-control-bar");
+    const c = exploreCounts();
+    if (!explore && currentMisMatches.length === 0) {
+      if (bar) bar.remove();
+      return;
+    }
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "greenoil-pins-control-bar";
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML = "";
+
+    const pill = (cls, label, n, title, onClick) => {
+      const el = document.createElement("div");
+      el.className = `greenoil-control-pill ${cls}`;
+      el.innerHTML = `<span>${label}</span> <span>${n}</span>`;
+      el.title = title;
+      if (onClick) el.addEventListener("click", onClick);
+      bar.appendChild(el);
+    };
+    pill("explore-pill", c.pending > 0 ? "探索中" : "餐馆", c.pending > 0 ? `${c.total - c.pending}/${c.total}` : c.total,
+      "当前探索范围内的餐馆");
+    pill("fried-pill", "油炸", c.fried, "jev 判断含油炸食物的餐馆");
+    pill("mis-pill", "MIS签约", c.mis, "点击查看首个匹配客户", () => {
+      if (currentMisMatches.length > 0) openMisModal(currentMisMatches[0]);
+    });
+
+    const clearBtn = document.createElement("div");
+    clearBtn.className = "greenoil-control-clear";
+    clearBtn.title = "清除探索结果";
+    clearBtn.innerHTML = SVG_TRASH;
+    clearBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      clearExplore();
+      showToast("已清除", "探索结果已清除");
+    });
+    bar.appendChild(clearBtn);
+  }
+
+  // One place: MIS match (background queue) and, unless it already is an
+  // MIS customer, detail page -> jev fried judgement.
+  function exploreProcessPlace(session, entry) {
+    session.pending++;
+    const done = () => {
+      session.pending--;
+      updatePinsControlBar();
+      if (session.pending === 0 && session.listed) finishExplore(session);
+    };
+    let left = 2;
+    const partDone = () => { if (--left === 0) done(); };
+
+    bgMessage({ action: "exploreMatchMis", sessionId: session.id, place: entry.place, forceRefresh: session.force })
+      .then((r) => {
+        if (session.cancelled) return;
+        if (r.notLoggedIn) session.misLoggedOut = true;
+        else if (r.success && r.customer) setExploreState(entry, "mis", r.customer);
+      })
+      .finally(partDone);
+
+    (async () => {
+      if (!session.force) {
+        const cached = await bgMessage({ action: "exploreClassifyFried", sessionId: session.id, place: entry.place, cacheOnly: true });
+        if (cached.success && cached.fried) { setExploreState(entry, "fried"); return; }
+      }
+      const detail = await detailLimiter(async () => {
+        if (session.cancelled || session.jevDisabled || entry.state === "mis") return null;
+        try {
+          return await placesApi.fetchPlaceDetail(entry.place.placeId);
+        } catch (err) {
+          console.warn("[GreenOil] place detail failed:", err);
+          return null;
+        }
+      });
+      if (session.cancelled || session.jevDisabled || entry.state === "mis") return;
+      const place = { ...entry.place, ...(detail || {}), placeId: entry.place.placeId, name: entry.place.name };
+      const r = await bgMessage({ action: "exploreClassifyFried", sessionId: session.id, place, forceRefresh: session.force });
+      if (session.cancelled) return;
+      if (r.disabled && !session.jevDisabled) {
+        session.jevDisabled = true;
+        showToast("油炸识别未启用", r.error || "jev 模型尚未配置", false);
+      }
+      if (r.success && r.fried) setExploreState(entry, "fried");
+    })().finally(partDone);
+  }
+
+  function finishExplore(session) {
+    if (session !== explore || session.finished) return;
+    session.finished = true;
+    session.ui.reset();
+    const c = exploreCounts();
+    const notes = [];
+    if (session.misLoggedOut) notes.push("MIS 登录已失效，部分未匹配");
+    if (session.jevDisabled) notes.push("油炸识别未启用");
+    showToast("探索完成", `共 ${c.total} 家餐馆：MIS 签约 ${c.mis} 家，油炸 ${c.fried} 家${notes.length ? "（" + notes.join("；") + "）" : ""}`, true);
+  }
+
+  async function handleExploreClick(container, circle, label, forceRefresh = false) {
+    if (container.classList.contains("greenoil-mis-disabled")) {
+      const liveAuth = await bgMessage({ action: "checkMisAuth", force: true });
+      if (liveAuth && liveAuth.loggedIn) {
+        isMisLoggedIn = true;
+        setExploreButtonAuth(container, true);
+      } else {
+        window.open("https://mis.greenoilinc.com/login_intranet.php", "_blank");
+        showToast("请先登录 MIS", "正在前往 MIS 登录页面，登录后返回即可使用", false);
+        return;
+      }
+    }
+    if (!placesApi) {
+      showToast("提示", "扩展已更新，请刷新网页", false);
+      return;
+    }
+
+    const view = currentMapView(extractPlaceData());
+    if (!view) {
+      showToast("提示", "未能读取当前地图范围，请稍后重试", false);
+      return;
+    }
+    clearExplore();
+    ensurePinLayer();
+    const session = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      view,                // snapshot: later map moves don't change the explored window
+      places: new Map(),
+      pending: 0,
+      listed: false,
+      force: forceRefresh,
+      ui: {
+        reset() {
+          circle.innerHTML = SVG_EXPLORE;
+          container.classList.remove("greenoil-loading");
+          label.textContent = "探索";
+        }
+      }
+    };
+    explore = session;
+    circle.innerHTML = SVG_SPINNER;
+    container.classList.add("greenoil-loading");
+    label.textContent = "探索中...";
+    updatePinsControlBar();
+
+    let order = 0;
+    try {
+      await placesApi.fetchWindowPlaces(session.view, {
+        schedule: searchLimiter,
+        isCancelled: () => session.cancelled,
+        onPlaces(newPlaces) {
+          if (session.cancelled) return;
+          const group = document.getElementById("greenoil-pins-explore") || (ensurePinLayer(), document.getElementById("greenoil-pins-explore"));
+          const frag = document.createDocumentFragment();
+          const fresh = [];
+          for (const place of newPlaces) {
+            if (session.places.has(place.placeId)) continue;
+            const entry = { place, state: "candidate", customer: null, el: null };
+            session.places.set(place.placeId, entry);
+            frag.appendChild(makeExplorePin(entry, order++));
+            fresh.push(entry);
+          }
+          group?.appendChild(frag);
+          applyExploreShadowing();
+          window.dispatchEvent(new Event("greenoil:pins"));
+          fresh.forEach((entry) => exploreProcessPlace(session, entry));
+          updatePinsControlBar();
+        }
+      });
+    } catch (err) {
+      console.warn("[GreenOil] explore search failed:", err);
+      if (session === explore) {
+        session.ui.reset();
+        showToast("探索失败", "无法读取 Google 地图当前窗口的餐馆，请稍后重试", false);
+      }
+      return;
+    }
+    if (session.cancelled) return;
+    session.listed = true;
+    if (session.places.size === 0) {
+      session.ui.reset();
+      session.finished = true;
+      showToast("探索完成", "当前地图窗口内没有找到餐馆，可缩小地图扩大范围", false);
+      updatePinsControlBar();
+    } else if (session.pending === 0) {
+      finishExplore(session);
+    }
+  }
+
+  function setExploreButtonAuth(container, loggedIn) {
+    const btn = container.querySelector("button");
+    const title = loggedIn ? EXPLORE_TITLE : "请先登录 MIS 内部系统 (点击前往登录)";
+    container.classList.toggle("greenoil-mis-disabled", !loggedIn);
+    container.title = title;
+    if (btn) {
+      btn.title = title;
+      btn.setAttribute("aria-label", loggedIn ? "探索" : title);
+    }
   }
 
   // Tabs opened before the extension was (re)loaded have no MAIN-world
@@ -342,46 +666,6 @@ if (window.__greenoil_injected__) {
         }
       });
     } catch (_) {}
-  }
-
-  function updatePinsControlBar() {
-    let bar = document.getElementById("greenoil-pins-control-bar");
-    if (currentMisMatches.length === 0) {
-      if (bar) bar.remove();
-      return;
-    }
-
-    if (!bar) {
-      bar = document.createElement("div");
-      bar.id = "greenoil-pins-control-bar";
-      document.body.appendChild(bar);
-    }
-
-    bar.innerHTML = "";
-
-    const misPill = document.createElement("div");
-    misPill.className = "greenoil-control-pill mis-pill";
-    misPill.innerHTML = `<span>MIS签约</span> <span>${currentMisMatches.length}</span>`;
-    misPill.title = "点击查看首个匹配客户";
-    misPill.addEventListener("click", () => {
-      if (currentMisMatches.length > 0) openMisModal(currentMisMatches[0]);
-    });
-    bar.appendChild(misPill);
-
-    const clearBtn = document.createElement("div");
-    clearBtn.className = "greenoil-control-clear";
-    clearBtn.title = "清空 MIS 签约客户记录";
-    clearBtn.innerHTML = SVG_TRASH;
-    clearBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      currentMisMatches = [];
-      const badge = document.getElementById("greenoil-heading-mis-badge");
-      if (badge) badge.remove();
-      rebuildPinElements();
-      updatePinsControlBar();
-      showToast("已清空", "MIS 签约记录已清空");
-    });
-    bar.appendChild(clearBtn);
   }
 
   let waypointRefreshPending = false;
@@ -409,22 +693,6 @@ if (window.__greenoil_injected__) {
         }
       });
     } catch (_) {}
-  }
-
-  function renderMisPins(matches) {
-    currentMisMatches = Array.isArray(matches) ? matches : [];
-    // Render MIS matches as shield pins in the shared pin layer
-    // (do NOT wipe the overlay — waypoint pins live there too).
-    rebuildPinElements();
-    updatePinsControlBar();
-
-    const mainPanel = document.querySelector('div[role="main"]');
-    if (mainPanel) {
-      const currentPlace = extractPlaceData();
-      if (currentPlace) {
-        updateHeadingMisBadge(mainPanel, currentPlace);
-      }
-    }
   }
 
   function inPagePanToLocation(targetPath, wp) {
@@ -738,17 +1006,7 @@ if (window.__greenoil_injected__) {
         container.dataset.authDebug = JSON.stringify(auth);
         isMisAuthChecked = true;
         isMisLoggedIn = Boolean(auth.loggedIn);
-        if (isMisLoggedIn) {
-          container.classList.remove("greenoil-mis-disabled");
-          container.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-          btn.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-          btn.setAttribute("aria-label", "匹配MIS");
-        } else {
-          container.classList.add("greenoil-mis-disabled");
-          container.title = "请先登录 MIS 内部系统 (点击前往登录)";
-          btn.title = "请先登录 MIS 内部系统 (点击前往登录)";
-          btn.setAttribute("aria-label", "请先登录 MIS 内部系统 (点击前往登录)");
-        }
+        setExploreButtonAuth(container, isMisLoggedIn);
       });
     } catch (e) {
       container.dataset.authDebug = "exception: " + e.message;
@@ -762,9 +1020,10 @@ if (window.__greenoil_injected__) {
     const canvas = mapCanvas();
     const w = canvas?.clientWidth || window.innerWidth;
     const h = canvas?.clientHeight || window.innerHeight;
-    const view = m
-      ? { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: parseFloat(m[3]), w, h }
-      : { lat: place.latitude, lng: place.longitude, zoom: 16, w, h };
+    let view;
+    if (m) view = { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: parseFloat(m[3]), w, h };
+    else if (place && Number.isFinite(place.latitude)) view = { lat: place.latitude, lng: place.longitude, zoom: 16, w, h };
+    else return null;
     const panel = document.querySelector('div[role="main"]');
     if (canvas && panel) {
       const c = canvas.getBoundingClientRect();
@@ -774,113 +1033,6 @@ if (window.__greenoil_injected__) {
       }
     }
     return view;
-  }
-
-  async function handleMisBtnClick(container, circle, label, forceRefresh = false) {
-    if (container.classList.contains("greenoil-mis-disabled")) {
-      const liveAuth = await new Promise((resolve) => {
-        if (!chrome.runtime?.id) return resolve({ loggedIn: false });
-        chrome.runtime.sendMessage({ action: "checkMisAuth", force: true }, (auth) => {
-          resolve(auth || { loggedIn: false });
-        });
-      });
-
-      if (liveAuth && liveAuth.loggedIn) {
-        isMisLoggedIn = true;
-        container.classList.remove("greenoil-mis-disabled");
-        container.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-        const b = container.querySelector("button");
-        if (b) {
-          b.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
-          b.setAttribute("aria-label", "匹配MIS");
-        }
-      } else {
-        window.open("https://mis.greenoilinc.com/login_intranet.php", "_blank");
-        showToast("请先登录 MIS", "正在前往 MIS 登录页面，登录后返回即可使用", false);
-        return;
-      }
-    }
-
-    const latestPlace = extractPlaceData();
-    if (!latestPlace || isNaN(latestPlace.latitude) || isNaN(latestPlace.longitude)) {
-      showToast("提示", "未能获取地点坐标，请在地点详情页稍候重试", false);
-      return;
-    }
-
-    circle.innerHTML = SVG_SPINNER;
-    container.classList.add("greenoil-loading");
-    label.textContent = "匹配中...";
-    showToast("透视扫描中", `正在扫描当前地图窗口内距 ${latestPlace.name} 最近的 20 家餐馆/快餐/食堂并匹配 MIS...`);
-
-    try {
-      if (!chrome.runtime?.id) {
-        showToast("提示", "扩展已重新加载，请刷新网页", false);
-        circle.innerHTML = SVG_MIS_SHIELD;
-        container.classList.remove("greenoil-loading");
-        label.textContent = "匹配MIS";
-        return;
-      }
-
-      // Nearby places come from Google Maps itself, for the current window.
-      let candidates;
-      try {
-        candidates = await window.__greenoil_places.fetchWindowFoodPlaces(
-          currentMapView(latestPlace),
-          { lat: latestPlace.latitude, lng: latestPlace.longitude },
-          20
-        );
-      } catch (err) {
-        console.warn("[GreenOil] Google nearby search failed:", err);
-        circle.innerHTML = SVG_MIS_SHIELD;
-        container.classList.remove("greenoil-loading");
-        label.textContent = "匹配MIS";
-        showToast("获取周边餐馆失败", "无法读取 Google 地图当前窗口的餐馆，请稍后重试", false);
-        return;
-      }
-
-      chrome.runtime.sendMessage({
-        action: "scanAndMatchMis",
-        lat: latestPlace.latitude,
-        lng: latestPlace.longitude,
-        placeName: latestPlace.name,
-        placeAddress: latestPlace.address,
-        candidates,
-        forceRefresh
-      }, (resp) => {
-        circle.innerHTML = SVG_MIS_SHIELD;
-        container.classList.remove("greenoil-loading");
-        label.textContent = "匹配MIS";
-
-        if (chrome.runtime.lastError) {
-          showToast("通信异常", "无法连接后台服务，请刷新网页", false);
-          return;
-        }
-
-        if (resp && resp.notLoggedIn) {
-          container.classList.add("greenoil-mis-disabled");
-          showToast("登录态失效", "请先登录 MIS 内部系统后再进行匹配", false);
-          return;
-        }
-
-        if (resp && resp.success) {
-          const matches = resp.matches || [];
-          const cacheNote = resp.cachedQueries > 0
-            ? `（${resp.cachedQueries}/${resp.totalQueries} 项来自缓存，Shift+点击可强制刷新）`
-            : "";
-          showToast("MIS匹配完成", `已扫描周边 ${resp.totalScanned} 家餐馆，匹配到 ${matches.length} 家签约客户！${cacheNote}`, true);
-          // Pins + heading badge only; details open on demand (badge / pill click).
-          renderMisPins(matches);
-        } else {
-          showToast("匹配失败", resp?.error || "扫描周边餐馆失败，请稍后重试", false);
-        }
-      });
-    } catch (err) {
-      console.error("Failed to scan and match MIS:", err);
-      circle.innerHTML = SVG_MIS_SHIELD;
-      container.classList.remove("greenoil-loading");
-      label.textContent = "匹配MIS";
-      showToast("通信异常", "扩展连接失败", false);
-    }
   }
 
   listen(window, "keydown", (e) => {
@@ -1408,7 +1560,7 @@ if (window.__greenoil_injected__) {
       // POINT 1: Place [+ 途径点] as the FIRST button in the row (before dirItem)!
       targetRow.insertBefore(container, dirItem);
 
-      // POINT 2: Place [匹配MIS] right after [+ 途径点] (before dirItem)
+      // POINT 2: Place [探索] right after [+ 途径点] (before dirItem)
       let misContainer = document.getElementById("greenoil-match-mis-btn");
       if (misContainer) misContainer.remove();
 
@@ -1419,16 +1571,25 @@ if (window.__greenoil_injected__) {
       const misBtn = document.createElement("button");
       misBtn.className = "S9kvJb greenoil-action-btn";
       misBtn.type = "button";
-      misBtn.setAttribute("aria-label", "匹配MIS");
-      misBtn.title = "扫描地图窗口内最近20家餐馆/快餐/食堂并匹配 MIS 签约客户";
+      misBtn.setAttribute("aria-label", "探索");
+      misBtn.title = EXPLORE_TITLE;
 
       const misCircle = document.createElement("span");
       misCircle.className = "DVeyrd greenoil-action-circle greenoil-mis-circle";
-      misCircle.innerHTML = SVG_MIS_SHIELD;
+      misCircle.innerHTML = explore && !explore.finished ? SVG_SPINNER : SVG_EXPLORE;
 
       const misLabel = document.createElement("div");
       misLabel.className = "R8c4Qb fontLabelMedium greenoil-action-label greenoil-mis-label";
-      misLabel.textContent = "匹配MIS";
+      misLabel.textContent = explore && !explore.finished ? "探索中..." : "探索";
+      if (explore && !explore.finished) {
+        misContainer.classList.add("greenoil-loading");
+        // The page re-rendered the button mid-exploration: re-point the reset.
+        explore.ui.reset = () => {
+          misCircle.innerHTML = SVG_EXPLORE;
+          misContainer.classList.remove("greenoil-loading");
+          misLabel.textContent = "探索";
+        };
+      }
 
       misBtn.appendChild(misCircle);
       misBtn.appendChild(misLabel);
@@ -1440,7 +1601,8 @@ if (window.__greenoil_injected__) {
         e.stopPropagation();
         e.preventDefault();
         // Shift+click: ignore cached results and re-query MIS.
-        handleMisBtnClick(misContainer, misCircle, misLabel, e.shiftKey);
+        if (misContainer.classList.contains("greenoil-loading")) return; // already exploring
+        handleExploreClick(misContainer, misCircle, misLabel, e.shiftKey);
       });
 
       targetRow.insertBefore(misContainer, dirItem);
@@ -1456,7 +1618,7 @@ if (window.__greenoil_injected__) {
     setInterval(() => {
       if (!document.hidden) {
         checkAndInject();
-        const hasPins = currentRouteWaypoints.length > 0 || currentMisMatches.length > 0;
+        const hasPins = currentRouteWaypoints.length > 0 || Boolean(explore && explore.places.size);
         const overlay = document.getElementById("greenoil-waypoint-pins-overlay");
         const canvas = mapCanvas();
         if (hasPins && canvas && overlay?.previousElementSibling !== canvas) rebuildPinElements();

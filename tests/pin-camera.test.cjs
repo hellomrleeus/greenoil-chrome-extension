@@ -250,7 +250,8 @@ test('content.js builds DOM-only pins inside Google\'s map container', () => {
   assert.match(source, /insertAdjacentElement\("afterend", overlay\)/);
   assert.match(source, /greenoil:pins/);
   assert.match(source, /GREENOIL_NAVIGATE/);
-  assert.ok(source.includes('greenoil-mis-map-pin'), 'MIS pins need a distinct style hook');
+  assert.match(source, /greenoil-pins-explore/, '探索 pins have their own group');
+  assert.match(source, /greenoil-pins-route/, 'waypoints in their own group (on top)');
   for (const name of [
     'pinTick', 'wakePinLoop', 'cameraNow', 'onCameraUpdate', 'pollMapCamera', 'rebaseDragDelta',
     'visibleMapRect', 'smoothDragPanTo', 'anchorNavigateTo', 'PointerEvent', 'GREENOIL_CAM',
@@ -266,12 +267,12 @@ test('panToLocation answers the background so it never falls back to a reload', 
   assert.match(block, /sendResponse\(\{ success: true \}\)/);
 });
 
-test('renderMisPins renders shield pins instead of wiping the overlay', () => {
-  const start = source.indexOf('function renderMisPins');
-  const end = source.indexOf('function inPagePanToLocation');
+test('route rebuild only replaces waypoint pins, never the 探索 pins', () => {
+  const start = source.indexOf('function rebuildPinElements');
+  const end = source.indexOf('// 探索 — every restaurant');
   const body = source.slice(start, end);
-  assert.ok(!body.includes('removeAnyPinOverlays'), 'must not wipe the pin overlay');
-  assert.ok(body.includes('rebuildPinElements'), 'must rebuild pins incl. MIS');
+  assert.match(body, /getElementById\("greenoil-pins-route"\)\.replaceChildren/);
+  assert.ok(!/greenoil-pins-explore"\)\.replaceChildren/.test(body));
 });
 
 test('CSS: overlay lives in the map container, click-through, pins anchored at the tip', () => {
@@ -283,15 +284,10 @@ test('CSS: overlay lives in the map container, click-through, pins anchored at t
   assert.ok(!/z-index:\s*998/.test(css));
   assert.match(css, /\.greenoil-pin-body \{[^}]*left:\s*-15px[^}]*top:\s*-38px/s);
   assert.match(css, /\.greenoil-waypoint-map-pin \{[^}]*visibility:\s*hidden;/s);
-  assert.match(css, /\.greenoil-mis-map-pin/);
+  assert.match(css, /#greenoil-pins-route \{ z-index: 2/);
+  assert.match(css, /@keyframes greenoil-pin-rise/);
+  assert.match(css, /\.greenoil-explore-shadowed/);
   assert.match(css, /\.greenoil-pin-shield/);
   assert.ok(!css.includes('.greenoil-pin-tooltip'));
 });
 
-test('MIS match completion shows pins only; the details modal is not auto-opened', () => {
-  const start = source.indexOf('async function handleMisBtnClick');
-  const end = source.indexOf('\n  }\n', source.indexOf('action: "scanAndMatchMis"', start));
-  const body = source.slice(start, end);
-  assert.ok(body.includes('renderMisPins(matches)'));
-  assert.ok(!body.includes('openMisModal'), 'no modal popup after matching');
-});
