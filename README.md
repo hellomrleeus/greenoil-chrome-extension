@@ -56,21 +56,36 @@ greenoil-chrome-extension/
 
 ## 安装与使用指引
 
-### 1. 安装扩展到 Chrome 浏览器
-1. 打开 Google Chrome 浏览器，在地址栏输入 `chrome://extensions` 并回车。
+### 1. 一键下载与安装 (推荐)
+
+用户无需安装 git，直接在终端中运行一行命令即可下载最新版本代码至当前目录的 `greenoil-extension` 文件夹，并打印启用指引：
+
+- **macOS / Linux 用户**（打开终端 Terminal 执行）：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/hellomrleeus/greenoil-chrome-extension/main/scripts/install.sh | bash
+  ```
+
+- **Windows 用户**（在开始菜单搜索并打开 PowerShell 执行）：
+  ```powershell
+  irm https://raw.githubusercontent.com/hellomrleeus/greenoil-chrome-extension/main/scripts/install.ps1 | iex
+  ```
+  *(注：也可以直接下载并双击运行 `scripts/install.bat`)*
+
+### 2. 在 Chrome 浏览器中启用插件
+1. 打开 Google Chrome 浏览器，在地址栏输入 `chrome://extensions/` 并回车。
 2. 开启右上角的 **“开发者模式” (Developer mode)** 开关。
 3. 点击左上角的 **“加载已解压的扩展程序” (Load unpacked)** 按钮。
-4. 在弹出的文件选择器中，选择本工程目录：`/Users/xlee/Documents/greenoil-chrome-extension`。
+4. 在弹出的文件选择器中，选择刚刚下载解压的目录（例如当前目录下的 `greenoil-extension` 文件夹，或本工程源码根目录）。
 5. 扩展安装成功，可在浏览器右上角扩展程序列表中将 **“Green Oil 路线助手”** 图标固定到工具栏。
 
-### 2. 在 Google 地图中添加途径点
+### 3. 在 Google 地图中添加途径点
 1. 在浏览器中打开官方 [Google Maps](https://www.google.com/maps)。
 2. 在搜索框中搜索任何餐馆或商户（例如搜索 `Church's Texas Chicken` 或多伦多任意餐馆）。
 3. 点击商户，左侧展开商户详细信息面板。
 4. 面板操作栏（路线、保存同排位置）将自动出现 Green Oil 专属绿色的 **`[+ 途径点]`** 按钮。
 5. 点击该按钮，按钮变为“已添加”，屏幕左下角弹出提示，扩展图标角标数字自动加 1。
 
-### 3. 管理路线与导出
+### 4. 管理路线与导出
 1. 点击浏览器工具栏的扩展图标，打开管理弹窗。
 2. 可查看当前路线中的所有经停点、调整顺序或删除。
 3. 可在下拉框中切换路线或点击“+ 新建”创建新的路线组。
