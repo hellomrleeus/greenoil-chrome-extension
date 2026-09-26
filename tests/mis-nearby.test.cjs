@@ -197,7 +197,12 @@ function loadMatching() {
 
 test('MIS query per place: house number -> address, else English name', () => {
   const m = loadMatching();
-  assert.deepEqual(plain(m.misQueryFor({ streetPrefix: '3550 Victoria Park Ave', englishName: 'Litsea' })), { kind: 'address', keyword: '3550 Victoria Park Ave' });
+  assert.deepEqual(plain(m.misQueryFor({ streetPrefix: '3550 Victoria Park Ave', englishName: 'Litsea' })), { kind: 'address', keyword: '3550 Victoria Park' },
+    'street type dropped so "Ave" / "Avenue" / "AVE." in MIS all match');
+  assert.equal(m.addressKeyword('2938A Finch Ave E'), '2938A Finch');
+  assert.equal(m.addressKeyword('483 Bay St'), '483 Bay');
+  assert.equal(m.addressKeyword('1 Yonge Street West'), '1 Yonge');
+  assert.equal(m.addressKeyword('100 Queensway'), '100 Queensway');
   assert.deepEqual(plain(m.misQueryFor({ streetPrefix: '', englishName: 'Hickory House' })), { kind: 'name', keyword: 'Hickory House' });
   assert.equal(m.misQueryFor({ streetPrefix: '', englishName: '' }), null);
 });
@@ -220,6 +225,11 @@ test('the MIS customer is tied to THIS place (unit, name, single tenant)', () =>
   assert.equal(m.pickMisRecordForPlace(single, { name: '悦宴', englishName: '', displayName: '3560 Victoria Park Ave, North York' }, 'address').code, 'S');
   // ...but not when the Google place is a unit in a plaza
   assert.equal(m.pickMisRecordForPlace(single, { name: '悦宴', englishName: '', displayName: '3560 Victoria Park Ave #1, North York' }, 'address'), null);
+  // the broader keyword ("3601 Victoria Park") must not match other house numbers
+  const near = [{ code: 'N', name: 'SEAFOOD PRINCESS', address: '13601 Victoria Park Avenue' }];
+  assert.equal(m.pickMisRecordForPlace(near, { name: 'Seafood Princess', englishName: 'Seafood Princess', streetPrefix: '3601 Victoria Park Ave', displayName: '3601 Victoria Park Ave' }, 'address'), null);
+  const avenue = [{ code: 'V', name: 'SEAFOOD PRINCESS', address: '3601 VICTORIA PARK AVENUE' }];
+  assert.equal(m.pickMisRecordForPlace(avenue, { name: 'Seafood Princess', englishName: 'Seafood Princess', streetPrefix: '3601 Victoria Park Ave', displayName: '3601 Victoria Park Ave' }, 'address').code, 'V');
   // name search: same street required
   const chain = [{ code: 'X', name: 'SUBWAY', address: '12 Yonge St' }, { code: 'Y', name: 'SUBWAY', address: '1760 Finch Ave E' }];
   assert.equal(m.pickMisRecordForPlace(chain, { name: 'Subway', englishName: 'Subway', street: 'Finch Ave E', displayName: '' }, 'name').code, 'Y');
@@ -233,6 +243,25 @@ test('name / unit helpers', () => {
   assert.equal(m.unitOf('105 Gordon Baker Rd Uinit 110, North York'), '110');
   assert.equal(m.unitOf('3330 Pharmacy Ave Unit K, Scarborough'), 'k');
   assert.equal(m.unitOf('3560 Victoria Park Ave, North York'), '');
+});
+
+test('login-page detection: a customer list with a password field is NOT the login page', () => {
+  const h = loadHandlers();
+  const isLogin = vm.runInContext('isMisLoginPage', h.ctx);
+  const list = `<form><input name="key_word"></form><div id="pw"><input type="password" name="new_pw"></div><table>${misRow('GO1', 'A', '1 Main St')}</table>`;
+  assert.equal(isLogin('https://mis.greenoilinc.com/index_intranet.php?view=customer_list', list), false);
+  assert.equal(isLogin('https://mis.greenoilinc.com/index_intranet.php', '<form><input name="user"><input type="password" name="pw"></form>'), true);
+  assert.equal(isLogin('https://mis.greenoilinc.com/login_intranet.php', ''), true);
+  assert.equal(isLogin('https://mis.greenoilinc.com/index_intranet.php', '<table></table>'), false, 'empty list = no customers');
+});
+
+test('MIS results carry a diagnosis for the page console', async () => {
+  const h = loadHandlers({ misHtml: `<table>${misRow('GO9', 'GOLDEN WOK', '3601 Victoria Park Ave Unit 5')}</table>` });
+  const r = await h.run('handleExploreMatchMis', { sessionId: 's', place: { ...PLACE, displayName: '3601 Victoria Park Ave, Scarborough' } });
+  assert.equal(r.customer, null);
+  assert.equal(r.diag.keyword, '3601 Victoria Park');
+  assert.equal(r.diag.records, 1);
+  assert.match(r.diag.reason, /对应不上.*GOLDEN WOK/);
 });
 
 test('page-provided places are sanitized', () => {

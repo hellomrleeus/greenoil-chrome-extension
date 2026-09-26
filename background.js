@@ -469,10 +469,28 @@ function sanitizeExplorePlace(p) {
   };
 }
 
+const STREET_SUFFIX_RE = /^(ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|cres|crescent|ct|crt|court|pl|place|ln|lane|pkwy|parkway|hwy|highway|way|terr|terrace|sq|square|cir|circle|e|w|n|s|east|west|north|south)\.?$/i;
+
+/**
+ * "3601 Victoria Park Ave" -> "3601 Victoria Park": MIS may write the same
+ * street as "Ave", "Avenue" or "AVE.", so the keyword stops before the
+ * street type / direction (the house number is checked on the results).
+ */
+function addressKeyword(streetPrefix) {
+  const tokens = String(streetPrefix || "").trim().split(/\s+/);
+  while (tokens.length > 2 && STREET_SUFFIX_RE.test(tokens[tokens.length - 1])) tokens.pop();
+  return tokens.join(" ");
+}
+
+function houseNumberOf(address) {
+  const m = String(address || "").replace(/^(?:unit|ste|suite|#)\s*[\w-]+\s*[-–]\s*/i, "").trim().match(/^(\d+[a-z]?)\b/i);
+  return m ? m[1].toLowerCase() : "";
+}
+
 /** How to look this place up in MIS: {kind, keyword} or null. */
 function misQueryFor(place) {
   if (place.streetPrefix && /^\d/.test(place.streetPrefix)) {
-    return { kind: "address", keyword: place.streetPrefix };
+    return { kind: "address", keyword: addressKeyword(place.streetPrefix) };
   }
   if (place.englishName && place.englishName.trim().length >= 3) {
     return { kind: "name", keyword: place.englishName.trim() };
@@ -530,6 +548,10 @@ function unitOf(address) {
 function pickMisRecordForPlace(records, place, kind) {
   let pool = (records || []).filter(r => r && r.code);
   if (kind === "name") pool = filterNameHits(pool, place);
+  if (kind === "address") {
+    const number = houseNumberOf(place.streetPrefix || place.displayName);
+    pool = pool.filter(r => houseNumberOf(r.address) === number);
+  }
   if (!pool.length) return null;
   const placeUnit = unitOf(place.displayName);
   const scored = pool.map(r => ({
@@ -591,9 +613,14 @@ function parseMisCustomerHtml(html) {
 }
 
 // An expired session is answered with the login form (HTTP 200), which
-// would otherwise parse as "no customers".
+// would otherwise parse as "no customers". A real customer list page can
+// also contain a password field (e.g. a change-password dialog), so only a
+// page WITHOUT the customer list / search form counts as the login page.
 function isMisLoginPage(url, html) {
-  return /login/i.test(String(url || "")) || /<input[^>]+type=["']?password/i.test(String(html || ""));
+  if (/login/i.test(String(url || ""))) return true;
+  const h = String(html || "");
+  const isListPage = /customer-info-detail|customer_list|name=["']?key_word/i.test(h);
+  return !isListPage && /<input[^>]+type=["']?password/i.test(h);
 }
 
 /**
@@ -658,15 +685,21 @@ async function handleExploreMatchMis(message) {
     if (hit) return { success: true, customer: hit.customer, cached: true };
   }
   const query = misQueryFor(place);
-  if (!query) return { success: true, customer: null };
+  if (!query) return { success: true, customer: null, diag: { reason: "无地址门牌号也无英文店名" } };
 
   return enqueueMis(async () => {
     if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
     const phpsessid = (await chrome.cookies.get({ url: "https://mis.greenoilinc.com", name: "PHPSESSID" }))?.value || "";
     const records = await misRecordsFor(query, phpsessid);
-    if (!records) return { success: false, error: "MIS 查询失败" };
+    const diag = { kind: query.kind, keyword: query.keyword, records: records ? records.length : null };
+    if (!records) return { success: false, error: "MIS 查询失败", diag: { ...diag, reason: "请求失败或被判定为登录页" } };
     const rec = pickMisRecordForPlace(records, place, query.kind);
-    if (!rec) return { success: true, customer: null };
+    if (!rec) {
+      const reason = records.length
+        ? `MIS 有 ${records.length} 条记录但对应不上这家店（${records.slice(0, 3).map(r => `${r.name} / ${r.address}`).join("；")}）`
+        : "MIS 无记录";
+      return { success: true, customer: null, diag: { ...diag, reason } };
+    }
     const customer = {
       ...rec,
       latitude: place.latitude,
@@ -680,7 +713,7 @@ async function handleExploreMatchMis(message) {
     if ((await checkMisAuth(true)).loggedIn) {
       await cachePositive(MIS_CACHE_KEY, place.placeId, { customer }, MIS_CACHE_MAX);
     }
-    return { success: true, customer };
+    return { success: true, customer, diag: { ...diag, reason: `匹配 ${rec.name} (${rec.code})` } };
   });
 }
 

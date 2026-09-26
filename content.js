@@ -543,6 +543,7 @@ if (window.__greenoil_injected__) {
     const mis = bgMessage({ action: "exploreMatchMis", sessionId: session.id, place: entry.place, forceRefresh: force })
       .then((r) => {
         if (!live()) return;
+        entry.misDiag = r.notLoggedIn ? { reason: "MIS 未登录" } : r.cached ? { reason: "缓存命中" } : (r.diag || { reason: r.error || "" });
         if (r.notLoggedIn) session.misLoggedOut = true;
         else if (r.success) entry.customer = r.customer || null;
         else if (!r.cancelled) session.misErrors = (session.misErrors || 0) + 1;
@@ -650,6 +651,16 @@ if (window.__greenoil_injected__) {
     session.running = false;
     updateExploreButton();
     updatePinsControlBar();
+    // Diagnostics for this batch (DevTools console on the Maps page).
+    console.info(`[GreenOil 探索] 第 ${batch.no} 批`);
+    console.table(entries.map(e => ({
+      餐馆: e.place.name,
+      地址: e.place.displayName,
+      MIS关键词: e.misDiag?.keyword ?? "",
+      MIS记录数: e.misDiag?.records ?? "",
+      MIS结果: e.misDiag?.reason ?? "",
+      油炸: e.fried ? `是 ${e.friedProbability != null ? Math.round(e.friedProbability * 100) + "%" : ""}` : "否"
+    })));
     const mis = entries.filter(e => exploreState(e) === "mis").length;
     const friedN = entries.filter(e => exploreState(e) === "fried").length;
     const notes = [];
