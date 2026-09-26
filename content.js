@@ -541,6 +541,7 @@ if (window.__greenoil_injected__) {
         showToast("油炸识别未启用", r.error || "jev 模型尚未配置", false);
       }
       if (r.success && r.fried) setExploreState(entry, "fried");
+      else if (!r.success && !r.disabled && !r.cancelled) session.jevErrors = (session.jevErrors || 0) + 1;
     })().finally(partDone);
   }
 
@@ -552,6 +553,7 @@ if (window.__greenoil_injected__) {
     const notes = [];
     if (session.misLoggedOut) notes.push("MIS 登录已失效，部分未匹配");
     if (session.jevDisabled) notes.push("油炸识别未启用");
+    else if (session.jevErrors) notes.push(`${session.jevErrors} 家油炸识别失败`);
     showToast("探索完成", `共 ${c.total} 家餐馆：MIS 签约 ${c.mis} 家，油炸 ${c.fried} 家${notes.length ? "（" + notes.join("；") + "）" : ""}`, true);
   }
 

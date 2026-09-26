@@ -233,18 +233,17 @@ function loadHandlers({ loggedIn = true, misHtml, misUrl = 'https://mis.greenoil
   const calls = { mis: [], jev: [] };
   const state = { loggedIn, misHtml, misInFlight: 0, misMaxInFlight: 0 };
   const cookies = () => (state.loggedIn ? [{ name: 'LOGCHECK', value: '1' }, { name: 'PHPSESSID', value: 'x' }] : []);
-  const timers = [];
   const ctx = vm.createContext({
     console: { warn() {}, log() {} }, URLSearchParams, AbortSignal, Date, Math, Object, Promise, Number, Set, Map, JSON, Error,
-    // The jev batching timer is flushed by the test; every other wait (MIS 1/s) runs at once.
-    setTimeout: (fn, ms) => { if (ms === 700) timers.push(fn); else setImmediate(fn); return timers.length; },
+    setTimeout: (fn) => { setImmediate(fn); return 0; }, // MIS 1/s waits run at once in tests
     WORKER_URL: 'https://worker.example',
     fetch: async (url, opts) => {
       url = String(url);
-      if (url.includes('/api/jev/key')) return { ok: true, json: async () => ({ success: true, key: 'k' }) };
-      if (url.includes('jev.example')) {
-        calls.jev.push(JSON.parse(opts.body));
-        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: jevReply(JSON.parse(JSON.parse(opts.body).messages[1].content)) } }] }) };
+      if (url.includes('/api/jev/key')) return { ok: true, json: async () => ({ success: true, apiKey: 'jev-key-from-worker', key: 'jev-key-from-worker' }) };
+      if (url.includes('api.typesafe.ai')) {
+        const body = JSON.parse(opts.body);
+        calls.jev.push({ url, auth: opts.headers.Authorization, body });
+        return { ok: true, status: 200, json: async () => jevReply(body) };
       }
       calls.mis.push(url);
       state.misInFlight++;
@@ -273,8 +272,7 @@ function loadHandlers({ loggedIn = true, misHtml, misUrl = 'https://mis.greenoil
   store.authToken = 'op-token';
   vm.runInContext(slice('let _cachedMisAuth', '// Runtime Message Dispatcher'), ctx);
   const run = (name, msg) => vm.runInContext(name, ctx)(msg);
-  const flushTimers = () => { while (timers.length) timers.shift()(); };
-  return { ctx, store, calls, state, run, flushTimers };
+  return { ctx, store, calls, state, run };
 }
 
 const misRow = (code, name, address) =>
@@ -328,30 +326,30 @@ test('logout wipes cached customers; expired-session login page is an error, not
   assert.equal(h2.store.gce_mis_match_cache, undefined);
 });
 
-test('jev: disabled until configured (pins stay grey, MIS unaffected)', async () => {
+test('jev: without the operator login, fried judgement is disabled (pins stay grey, MIS unaffected)', async () => {
   const h = loadHandlers();
-  const p = h.run('handleExploreClassifyFried', { sessionId: 's', place: PLACE });
-  await new Promise((r) => setImmediate(r)); // handler awaits the cache before queueing
-  h.flushTimers();
-  const r = await p;
+  delete h.store.authToken;
+  const r = await h.run('handleExploreClassifyFried', { sessionId: 's', place: PLACE });
   assert.equal(r.success, false);
   assert.equal(r.disabled, true);
+  assert.match(r.error, /登录/);
 });
 
-test('jev: places are batched, only "fried" verdicts are cached', async () => {
-  const h = loadHandlers({
-    jevReply: (items) => JSON.stringify({ results: items.map((it) => ({ id: it.id, fried: it.name.includes('Fried') })) }),
-  });
-  vm.runInContext('JEV_API.url = "https://jev.example/v1/chat/completions"; JEV_API.model = "m";', h.ctx);
-  const mk = (i, name) => ({ ...PLACE, placeId: `0x${i}:0x${i}`, name, reviews: ['great wings'] });
-  const ps = [h.run('handleExploreClassifyFried', { sessionId: 's', place: mk(1, 'Fried Chicken Hut') }),
-    h.run('handleExploreClassifyFried', { sessionId: 's', place: mk(2, 'Sushi Bar') })];
-  await new Promise((r) => setImmediate(r));
-  h.flushTimers();
-  const [a, b] = await Promise.all(ps);
-  assert.equal(h.calls.jev.length, 1, 'one jev call for the batch');
-  assert.equal(h.calls.jev[0].model, 'm');
-  assert.deepEqual([a.fried, b.fried], [true, false]);
+test('jev: TypeSafe System One request per place; only "fried" verdicts are cached', async () => {
+  const h = loadHandlers({ jevReply: (body) => ({ answers: { fried: { noul: body.state.name.includes('Fried') ? 0.91 : 0.12 } }, usage: {} }) });
+  const mk = (i, name) => ({ ...PLACE, placeId: `0x${i}:0x${i}`, name, categories: ['Chicken restaurant'], description: 'Crispy wings', reviews: ['great wings'] });
+  const [a, b] = await Promise.all([
+    h.run('handleExploreClassifyFried', { sessionId: 's', place: mk(1, 'Fried Chicken Hut') }),
+    h.run('handleExploreClassifyFried', { sessionId: 's', place: mk(2, 'Sushi Bar') }),
+  ]);
+  assert.deepEqual([a.fried, a.probability, b.fried, b.probability], [true, 0.91, false, 0.12]);
+  assert.equal(h.calls.jev.length, 2, 'one System One request per restaurant');
+  const req = h.calls.jev[0];
+  assert.equal(req.url, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(req.auth, 'Bearer jev-key-from-worker');
+  assert.equal(req.body.model, 'jev-latest');
+  assert.equal(req.body.questions.fried.type, 'noul');
+  assert.deepEqual(req.body.state.review_snippets, ['great wings']);
   assert.ok(h.store.gce_fried_cache['0x1:0x1']);
   assert.equal(h.store.gce_fried_cache['0x2:0x2'], undefined, 'non-fried not cached');
 
@@ -359,14 +357,16 @@ test('jev: places are batched, only "fried" verdicts are cached', async () => {
   assert.deepEqual([probe.fried, probe.cached], [true, true]);
   const miss = await h.run('handleExploreClassifyFried', { sessionId: 's', place: mk(2, 'Sushi Bar'), cacheOnly: true });
   assert.equal(miss.miss, true);
-  assert.equal(h.calls.jev.length, 1);
+  assert.equal(h.calls.jev.length, 2, 'probes never call jev');
 });
 
-test('jev reply parsing tolerates code fences and junk', () => {
+test('jev reply parsing', () => {
   const h = loadHandlers();
-  const parse = vm.runInContext('parseFriedReply', h.ctx);
-  assert.deepEqual([...parse('```json\n{"results":[{"id":"a","fried":true},{"id":"b","fried":"yes"}]}\n```')], [['a', true]]);
-  assert.equal(parse('no json').size, 0);
+  const prob = vm.runInContext('friedProbability', h.ctx);
+  assert.equal(prob({ answers: { fried: { noul: 0.87 } } }), 0.87);
+  assert.equal(prob({ answers: { fried: { value: true } } }), 1);
+  assert.equal(prob({ answers: {} }), null);
+  assert.equal(prob(null), null);
 });
 
 test('cache entries expire after 30 days and are capped', () => {

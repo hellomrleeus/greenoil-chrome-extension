@@ -682,23 +682,19 @@ async function handleExploreMatchMis(message) {
 }
 
 // ---- 探索: fried-food judgement with the jev model ----
-// Places are batched (JEV_BATCH_SIZE per call, one call at a time). The
-// key comes from the Green Oil Worker (/api/jev/key, needs the operator's
-// login token saved by the popup).
-//
-// TODO(jev): fill JEV_API once the jev endpoint / request format is known.
-// Until then classification is reported as disabled and pins stay grey
-// (MIS matching is unaffected).
+// jev (TypeSafe System One) is a structured-decision model, not a chat
+// model: POST /v1/systemone with a `state` (the restaurant's text) and
+// typed `questions`. A "noul" question returns the probability of "yes".
+// The key comes from the Green Oil Worker (/api/jev/key, operator token
+// saved by the popup login). Details arrive at most 1/s, so one request
+// per restaurant, one at a time.
 const JEV_API = {
-  url: "",   // e.g. "https://…/v1/chat/completions"
-  model: ""
+  url: "https://api.typesafe.ai/v1/systemone",
+  model: "jev-latest"
 };
-const JEV_BATCH_SIZE = 8;
-const JEV_BATCH_WAIT_MS = 700;
+const FRIED_THRESHOLD = 0.5;
 let _jevKey = null;
 let _jevChain = Promise.resolve();
-const _jevPending = [];
-let _jevTimer = null;
 
 // A different (or no) operator login invalidates the fetched key.
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -708,96 +704,82 @@ chrome.storage.onChanged.addListener((changes, area) => {
 async function getJevKey() {
   if (_jevKey) return _jevKey;
   const { authToken } = await chrome.storage.local.get("authToken");
-  if (!authToken) throw new Error("请先在扩展中登录 Green Oil 账号");
+  if (!authToken) {
+    const err = new Error("请先在扩展弹窗中登录 Green Oil 账号");
+    err.disabled = true;
+    throw err;
+  }
   const resp = await fetch(`${WORKER_URL}/api/jev/key`, { headers: { Authorization: `Bearer ${authToken}` } });
   const data = await resp.json().catch(() => ({}));
-  const key = data.key || data.apiKey || data.data?.key;
-  if (!resp.ok || !key) throw new Error(data.message || data.error || "获取 JEV Key 失败");
+  const key = data.key || data.apiKey || data.jevKey;
+  if (!resp.ok || !key) {
+    const err = new Error(data.message || data.error || "获取 JEV Key 失败");
+    err.disabled = resp.status === 401;
+    throw err;
+  }
   _jevKey = key;
   return key;
 }
 
-function friedPrompt(places) {
-  return [
-    {
-      role: "system",
-      content:
-        "You help a used-cooking-oil collection company. For each restaurant decide whether it " +
-        "very likely serves DEEP-FRIED food (fried chicken, fries, tempura, fish & chips, spring " +
-        "rolls, deep-fried dim sum, wings, etc.), i.e. operates a deep fryer. Stir-frying alone " +
-        "does not count. Use only the given text. Reply with JSON only: " +
-        '{"results":[{"id":"<id>","fried":true|false}]}'
+/** System One request: the restaurant as `state`, one yes/no question. */
+function friedRequest(place) {
+  return {
+    model: JEV_API.model,
+    state: {
+      name: place.name,
+      categories: place.categories,
+      description: place.description,
+      owner_description: place.ownerDescription,
+      review_snippets: place.reviews
     },
-    {
-      role: "user",
-      content: JSON.stringify(places.map(p => ({
-        id: p.placeId,
-        name: p.name,
-        categories: p.categories,
-        description: p.description,
-        owner_description: p.ownerDescription,
-        reviews: p.reviews
-      })))
-    }
-  ];
-}
-
-/** Map placeId -> boolean from a jev reply (tolerates ```json fences). */
-function parseFriedReply(text) {
-  const m = String(text || "").match(/\{[\s\S]*\}/);
-  const out = new Map();
-  if (!m) return out;
-  let data;
-  try { data = JSON.parse(m[0]); } catch (_) { return out; }
-  for (const r of Array.isArray(data.results) ? data.results : []) {
-    if (r && typeof r.id === "string" && typeof r.fried === "boolean") out.set(r.id, r.fried);
-  }
-  return out;
-}
-
-async function callJev(messages) {
-  if (!JEV_API.url) {
-    const err = new Error("jev 模型尚未配置");
-    err.disabled = true;
-    throw err;
-  }
-  const key = await getJevKey();
-  const resp = await fetch(JEV_API.url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model: JEV_API.model, messages, temperature: 0 }),
-    signal: AbortSignal.timeout(60000)
-  });
-  if (resp.status === 401) _jevKey = null;
-  if (!resp.ok) throw new Error(`jev HTTP ${resp.status}`);
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content || "";
-}
-
-function flushJev() {
-  _jevTimer = null;
-  while (_jevPending.length) {
-    const batch = _jevPending.splice(0, JEV_BATCH_SIZE);
-    const live = batch.filter(j => !_cancelledSessions.has(j.sessionId));
-    batch.filter(j => !live.includes(j)).forEach(j => j.resolve({ success: false, cancelled: true }));
-    if (!live.length) continue;
-    const run = _jevChain.then(async () => {
-      try {
-        const verdicts = parseFriedReply(await callJev(friedPrompt(live.map(j => j.place))));
-        for (const j of live) {
-          const fried = verdicts.has(j.place.placeId) ? verdicts.get(j.place.placeId) : null;
-          if (fried === true) await cachePositive(FRIED_CACHE_KEY, j.place.placeId, {}, FRIED_CACHE_MAX);
-          j.resolve({ success: fried !== null, fried });
+    questions: {
+      fried: {
+        type: "noul",
+        instructions:
+          "Does this restaurant serve deep-fried food, i.e. does it operate a deep fryer? " +
+          "Examples: fried chicken, french fries, wings, tempura, fish and chips, spring rolls, " +
+          "katsu, deep-fried dim sum, onion rings. Stir-frying or pan-frying alone does not count.",
+        criteria: {
+          true: "Deep-fried dishes are very likely on the menu (from the cuisine, description or reviews).",
+          false: "No sign of deep-fried dishes; the cuisine is typically not deep-fried."
         }
-      } catch (err) {
-        live.forEach(j => j.resolve({ success: false, disabled: Boolean(err.disabled), error: err.message }));
       }
-    });
-    _jevChain = run.catch(() => {});
-  }
+    }
+  };
 }
 
-/** {fried: true|false} for one place (batched with others). */
+/** Probability of "yes" from a System One reply, or null. */
+function friedProbability(data) {
+  const a = data && data.answers && data.answers.fried;
+  if (!a) return null;
+  for (const v of [a.noul, a.probability, a.value]) {
+    if (typeof v === "number" && v >= 0 && v <= 1) return v;
+    if (typeof v === "boolean") return v ? 1 : 0;
+  }
+  return null;
+}
+
+async function callJev(body) {
+  let key = await getJevKey();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await fetch(JEV_API.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (resp.status === 401 && attempt === 0) {
+      _jevKey = null; // rotated on the Worker: fetch it again once
+      key = await getJevKey();
+      continue;
+    }
+    if (!resp.ok) throw new Error(`jev HTTP ${resp.status}`);
+    return resp.json();
+  }
+  throw new Error("jev 鉴权失败");
+}
+
+/** {fried, probability} for one place; only "fried" is cached. */
 async function handleExploreClassifyFried(message) {
   const place = sanitizeExplorePlace(message.place);
   if (!place) return { success: false, error: "bad place" };
@@ -807,11 +789,21 @@ async function handleExploreClassifyFried(message) {
   }
   // Probe only: lets the page skip the detail-page request for cached places.
   if (message.cacheOnly) return { success: true, fried: null, miss: true };
-  return new Promise((resolve) => {
-    _jevPending.push({ sessionId: message.sessionId, place, resolve });
-    if (_jevPending.length >= JEV_BATCH_SIZE) flushJev();
-    else if (!_jevTimer) _jevTimer = setTimeout(flushJev, JEV_BATCH_WAIT_MS);
+
+  const run = _jevChain.then(async () => {
+    if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
+    try {
+      const probability = friedProbability(await callJev(friedRequest(place)));
+      if (probability === null) return { success: false, error: "jev 返回格式无法识别" };
+      const fried = probability >= FRIED_THRESHOLD;
+      if (fried) await cachePositive(FRIED_CACHE_KEY, place.placeId, { probability }, FRIED_CACHE_MAX);
+      return { success: true, fried, probability };
+    } catch (err) {
+      return { success: false, disabled: Boolean(err.disabled), error: err.message };
+    }
   });
+  _jevChain = run.catch(() => {});
+  return run;
 }
 
 // Runtime Message Dispatcher
