@@ -59,17 +59,35 @@ const hasWaypoints = (routes) => Object.values(routes || {}).some((r) => r?.wayp
 
 /**
  * api: { getMapRoutes(token), saveMapRoutes(token, groups, activeGroupId, origin) }
- * getToken: async () => bearer token or "" (the endpoint is also public).
+ * getToken: async () => the operator's bearer token, "" when logged out.
  */
+const LOGIN_REQUIRED = "未登录或登录已过期，请在扩展弹窗中登录 Green Oil 账号";
+
+function apiError(res, fallback) {
+  if (res?.error === "Unauthorized") return loginRequired();
+  return new Error(res?.error || res?.message || fallback);
+}
+
+function loginRequired() {
+  const err = new Error(LOGIN_REQUIRED);
+  err.unauthorized = true;
+  return err;
+}
+
 export function createRouteStore({ api, defs, getToken = async () => "" }) {
   let inflight = null;
   let chain = Promise.resolve();
 
+  // The API needs a login for reads and writes.
+  async function token() {
+    const t = await getToken();
+    if (!t) throw loginRequired();
+    return t;
+  }
+
   async function fetchCloud() {
-    const res = await api.getMapRoutes(await getToken());
-    if (!res || !res.success || !res.data) {
-      throw new Error(res?.error || res?.message || "云端路线读取失败");
-    }
+    const res = await api.getMapRoutes(await token());
+    if (!res || !res.success || !res.data) throw apiError(res, "云端路线读取失败");
     return { data: res.data, routes: routesFromCloud(res.data, defs) };
   }
 
@@ -90,8 +108,8 @@ export function createRouteStore({ api, defs, getToken = async () => "" }) {
       const result = await fn(routes);
       if (result === false) return { routes, result, saved: false };
       const payload = cloudFromRoutes(routes, data, defs);
-      const res = await api.saveMapRoutes(await getToken(), payload.groups, payload.activeGroupId, payload.origin);
-      if (!res || !res.success) throw new Error(res?.error || res?.message || "云端路线保存失败");
+      const res = await api.saveMapRoutes(await token(), payload.groups, payload.activeGroupId, payload.origin);
+      if (!res || !res.success) throw apiError(res, "云端路线保存失败");
       return { routes: res.data?.groups ? routesFromCloud(res.data, defs) : routes, result, saved: true };
     });
     chain = run.catch(() => {});

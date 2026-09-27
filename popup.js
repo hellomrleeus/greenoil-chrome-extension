@@ -314,16 +314,22 @@ class PopupController {
     this.render();
     try {
       const resp = await chrome.runtime.sendMessage({ action: "getRoutes" });
-      if (!resp?.success || !resp.routes) throw new Error(resp?.error || "云端路线读取失败");
+      if (!resp?.success || !resp.routes) {
+        const err = new Error(resp?.error || "云端路线读取失败");
+        err.unauthorized = Boolean(resp?.unauthorized);
+        throw err;
+      }
       this.colorRoutes = resp.routes;
       this.routesStatus = "ready";
       this.routesError = "";
+      this.routesNeedLogin = false;
       this.lastSyncedAt = new Date().toISOString();
       chrome.storage.local.set({ lastSyncedAt: this.lastSyncedAt });
     } catch (e) {
       this.colorRoutes = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF));
       this.routesStatus = "error";
       this.routesError = e.message || String(e);
+      this.routesNeedLogin = Boolean(e.unauthorized);
     }
     this.applyTheme(this.getActiveRoute());
     this.updateAuthStatusUI();
@@ -354,7 +360,7 @@ class PopupController {
       chrome.storage.local.set({ lastSyncedAt: this.lastSyncedAt });
       this.updateAuthStatusUI();
     } catch (e) {
-      alert(`途径点保存到云端失败：${e.message || e}\n已重新读取云端数据。`);
+      alert(`途径点保存到云端失败：${e.message || e}`);
       await this.fetchRoutes();
     }
   }
@@ -448,8 +454,10 @@ class PopupController {
       this.elWaypointsList.innerHTML = `
         <div class="empty-state">
           ${SVG_EMPTY}
-          <div class="empty-text">${loading ? "正在读取云端途径点…" : "云端途径点读取失败"}</div>
-          <div class="empty-subtext">${loading ? "途径点只以云端数据为准，不使用本地缓存。" : `${this.escapeHtml(this.routesError)}。点击右上角同步按钮重试。`}</div>
+          <div class="empty-text">${loading ? "正在读取云端途径点…" : this.routesNeedLogin ? "请先登录" : "云端途径点读取失败"}</div>
+          <div class="empty-subtext">${loading ? "途径点只以云端数据为准，不使用本地缓存。"
+            : this.routesNeedLogin ? "途径点保存在云端，需登录 Green Oil 账号后读取。点击右上角同步按钮登录。"
+            : `${this.escapeHtml(this.routesError)}。点击右上角同步按钮重试。`}</div>
         </div>
       `;
       return;
@@ -1045,6 +1053,10 @@ class PopupController {
 
   // Re-read the lists from the cloud API
   async handleCloudSync() {
+    if (!this.authToken || this.routesNeedLogin) {
+      this.openAuthModal();
+      return;
+    }
     this.elBtnSyncCloud.disabled = true;
     this.elBtnManualSync.disabled = true;
     try {
@@ -1119,6 +1131,7 @@ class PopupController {
     this.authUser = "";
     await this.saveState(false);
     this.updateAuthStatusUI();
+    await this.fetchRoutes();
   }
 
   showAuthError(msg) {

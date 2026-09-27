@@ -1776,8 +1776,8 @@ function isPlaceMatch(w, q) {
 
       sendResponse({ success: false, error: "未知操作" });
     } catch (err) {
-      console.error("Runtime message handler error:", err);
-      sendResponse({ success: false, error: err.message });
+      if (!err.unauthorized) console.error("Runtime message handler error:", err);
+      sendResponse({ success: false, error: err.message, unauthorized: Boolean(err.unauthorized) });
     }
   })();
 

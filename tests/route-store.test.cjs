@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const DEFS = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [`route_${n}`,
   { id: `route_${n}`, color: `#00000${n}`, name: `R${n}`, origin: 'HQ', waypoints: [] }]));
 const load = () => import('../route-store.js');
+const TOKEN = async () => 'signed-token';
 
 function fakeApi(initial) {
   const api = {
@@ -53,7 +54,7 @@ test('writes keep cloud ids, extra groups, and stay contiguous', async () => {
 test('every read hits the API; concurrent reads share one request', async () => {
   const { createRouteStore } = await load();
   const api = fakeApi({ groups: [{ id: 'g1', waypoints: [{ name: 'a' }] }] });
-  const store = createRouteStore({ api, defs: DEFS });
+  const store = createRouteStore({ api, defs: DEFS, getToken: TOKEN });
   await Promise.all([store.load(), store.load()]);
   assert.equal(api.gets, 1);
   api.data.groups[0].waypoints.push({ name: 'b' });
@@ -65,7 +66,7 @@ test('every read hits the API; concurrent reads share one request', async () => 
 test('mutate re-reads before writing and never writes after a failed read', async () => {
   const { createRouteStore } = await load();
   const api = fakeApi({ groups: [{ id: 'g1', waypoints: [{ name: 'web' }] }] });
-  const store = createRouteStore({ api, defs: DEFS });
+  const store = createRouteStore({ api, defs: DEFS, getToken: TOKEN });
   await store.mutate((r) => { r.route_1.waypoints.push({ name: 'ext' }); });
   assert.deepEqual(api.data.groups[0].waypoints.map((w) => w.name), ['web', 'ext']);
 
@@ -84,11 +85,25 @@ test('a legacy local list is uploaded only into an empty cloud', async () => {
   const local = { route_1: { waypoints: [{ name: 'local' }] } };
 
   const empty = fakeApi({ groups: [{ id: 'group_default', waypoints: [] }] });
-  assert.equal(await createRouteStore({ api: empty, defs: DEFS }).adoptLegacy(local), true);
+  assert.equal(await createRouteStore({ api: empty, defs: DEFS, getToken: TOKEN }).adoptLegacy(local), true);
   assert.deepEqual(empty.data.groups[0].waypoints.map((w) => w.name), ['local']);
 
   const full = fakeApi({ groups: [{ id: 'g1', waypoints: [{ name: 'cloud' }] }] });
-  assert.equal(await createRouteStore({ api: full, defs: DEFS }).adoptLegacy(local), true);
+  assert.equal(await createRouteStore({ api: full, defs: DEFS, getToken: TOKEN }).adoptLegacy(local), true);
   assert.equal(full.posts.length, 0);
   assert.deepEqual(full.data.groups[0].waypoints.map((w) => w.name), ['cloud']);
+});
+
+test('reads and writes need a login: no token -> no request; 401 -> login error', async () => {
+  const { createRouteStore } = await load();
+  const api = fakeApi({ groups: [{ id: 'g1', waypoints: [] }] });
+  const loggedOut = createRouteStore({ api, defs: DEFS, getToken: async () => '' });
+  await assert.rejects(loggedOut.load(), (e) => e.unauthorized === true);
+  await assert.rejects(loggedOut.mutate(() => {}), (e) => e.unauthorized === true);
+  assert.equal(api.gets, 0);
+  assert.equal(api.posts.length, 0);
+
+  api.getMapRoutes = async () => ({ error: 'Unauthorized', message: '未登录或凭据已过期' });
+  const expired = createRouteStore({ api, defs: DEFS, getToken: TOKEN });
+  await assert.rejects(expired.load(), (e) => e.unauthorized === true && /登录/.test(e.message));
 });
