@@ -80,17 +80,6 @@ const SVG_CLOCK = `<svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12
 const SVG_EMPTY = `<svg class="empty-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
 const SVG_PIN_MINI = `<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
 
-function getHaversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 class PopupController {
   constructor() {
     this.colorRoutes = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF));
@@ -871,7 +860,8 @@ class PopupController {
   }
 
   /**
-   * Route Optimization (Distance TSP starting from Origin, preserving locked groups contiguously)
+   * Route Optimization (shortest open path from Origin, locked groups kept
+   * contiguous and in order). See route-optimizer.js.
    */
   handleOptimizeRoute() {
     const activeRoute = this.getActiveRoute();
@@ -882,55 +872,7 @@ class PopupController {
       return;
     }
 
-    // Origin coordinates
-    const curLat = DEFAULT_ORIGIN_COORDS.lat;
-    const curLng = DEFAULT_ORIGIN_COORDS.lng;
-
-    const remaining = [...waypoints];
-    const initialRoute = [];
-
-    let currentLat = curLat;
-    let currentLng = curLng;
-
-    while (remaining.length > 0) {
-      let bestIdx = 0;
-      let minDistance = Infinity;
-
-      for (let i = 0; i < remaining.length; i++) {
-        const item = remaining[i];
-        const rLat = parseFloat(item.latitude) || currentLat;
-        const rLng = parseFloat(item.longitude) || currentLng;
-        const dist = getHaversineDistance(currentLat, currentLng, rLat, rLng);
-
-        if (dist < minDistance) {
-          minDistance = dist;
-          bestIdx = i;
-        }
-      }
-
-      const bestItem = remaining.splice(bestIdx, 1)[0];
-      initialRoute.push(bestItem);
-
-      currentLat = parseFloat(bestItem.latitude) || currentLat;
-      currentLng = parseFloat(bestItem.longitude) || currentLng;
-
-      // If bestItem belongs to a locked group, pull in all other members in their original relative order!
-      if (bestItem.lockGroupId) {
-        const grpId = bestItem.lockGroupId;
-        for (let ri = 0; ri < remaining.length; ) {
-          if (remaining[ri].lockGroupId === grpId) {
-            const sibling = remaining.splice(ri, 1)[0];
-            initialRoute.push(sibling);
-            currentLat = parseFloat(sibling.latitude) || currentLat;
-            currentLng = parseFloat(sibling.longitude) || currentLng;
-          } else {
-            ri++;
-          }
-        }
-      }
-    }
-
-    activeRoute.waypoints = initialRoute;
+    activeRoute.waypoints = window.GreenOilRoute.optimizeRoute(waypoints, DEFAULT_ORIGIN_COORDS);
     this.saveState();
     this.render();
   }
