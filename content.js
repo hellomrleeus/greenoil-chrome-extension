@@ -113,6 +113,13 @@ if (window.__greenoil_injected__) {
           }
         }
 
+        // Waypoint lists changed in the cloud (popup edit, add from any tab).
+        if (message.action === "routesChanged") {
+          lastProcessedKey = "";
+          if (typeof checkAndInject === "function") checkAndInject();
+          if (typeof refreshWaypointPins === "function") refreshWaypointPins();
+        }
+
         if (message.action === "misAuthChanged" && message.auth) {
           isMisAuthChecked = true;
           isMisLoggedIn = Boolean(message.auth.loggedIn);

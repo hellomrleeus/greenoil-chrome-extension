@@ -287,63 +287,78 @@ class PopupController {
     let data = {};
     if (chrome?.storage?.local) {
       data = await chrome.storage.local.get([
-        "gce_color_routes",
         "gce_active_route_id",
         "authToken",
         "authUser",
         "lastSyncedAt"
       ]);
-    } else {
-      try {
-        data = JSON.parse(localStorage?.getItem("gce_state") || "{}");
-      } catch (_) {}
     }
 
-    if (data.gce_color_routes && typeof data.gce_color_routes === "object") {
-      this.colorRoutes = { ...JSON.parse(JSON.stringify(COLOR_ROUTES_DEF)), ...data.gce_color_routes };
-    } else {
-      this.colorRoutes = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF));
-    }
-
-    this.activeRouteId = data.gce_active_route_id || "route_1";
-    if (!this.colorRoutes[this.activeRouteId]) {
-      this.activeRouteId = "route_1";
-    }
-
+    this.activeRouteId = COLOR_ROUTES_DEF[data.gce_active_route_id] ? data.gce_active_route_id : "route_1";
     this.authToken = data.authToken || "";
     this.authUser = data.authUser || "";
     this.lastSyncedAt = data.lastSyncedAt || null;
 
     this.applyTheme(this.getActiveRoute());
     this.updateAuthStatusUI();
+    await this.fetchRoutes();
+  }
+
+  /**
+   * Waypoint lists come only from the cloud API (via background.js); none
+   * is kept locally. Until a read succeeds, edits are blocked so an empty
+   * placeholder can never be written over the cloud.
+   */
+  async fetchRoutes() {
+    this.routesStatus = "loading";
+    this.render();
+    try {
+      const resp = await chrome.runtime.sendMessage({ action: "getRoutes" });
+      if (!resp?.success || !resp.routes) throw new Error(resp?.error || "云端路线读取失败");
+      this.colorRoutes = resp.routes;
+      this.routesStatus = "ready";
+      this.routesError = "";
+      this.lastSyncedAt = new Date().toISOString();
+      chrome.storage.local.set({ lastSyncedAt: this.lastSyncedAt });
+    } catch (e) {
+      this.colorRoutes = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF));
+      this.routesStatus = "error";
+      this.routesError = e.message || String(e);
+    }
+    this.applyTheme(this.getActiveRoute());
+    this.updateAuthStatusUI();
     this.render();
   }
 
-  async saveState() {
+  async saveState(pushRoutes = true) {
     if (chrome?.storage?.local) {
       await chrome.storage.local.set({
-        gce_color_routes: this.colorRoutes,
         gce_active_route_id: this.activeRouteId,
         authToken: this.authToken,
         authUser: this.authUser,
         lastSyncedAt: this.lastSyncedAt
       });
-    } else {
-      try {
-        localStorage?.setItem("gce_state", JSON.stringify({
-          gce_color_routes: this.colorRoutes,
-          gce_active_route_id: this.activeRouteId,
-          authToken: this.authToken,
-          authUser: this.authUser,
-          lastSyncedAt: this.lastSyncedAt
-        }));
-      } catch (_) {}
+    }
+    if (!pushRoutes) return;
+    if (this.routesStatus !== "ready") {
+      alert("云端途径点尚未读取成功，本次修改未保存。");
+      await this.fetchRoutes();
+      return;
     }
 
-    if (chrome?.runtime?.sendMessage) {
-      chrome.runtime.sendMessage({ action: "updateBadge" });
+    // Lists go straight to the API (the background serializes the writes).
+    try {
+      const resp = await chrome.runtime.sendMessage({ action: "saveRoutes", routes: this.colorRoutes });
+      if (!resp?.success) throw new Error(resp?.error || "云端路线保存失败");
+      this.lastSyncedAt = new Date().toISOString();
+      chrome.storage.local.set({ lastSyncedAt: this.lastSyncedAt });
+      this.updateAuthStatusUI();
+    } catch (e) {
+      alert(`途径点保存到云端失败：${e.message || e}\n已重新读取云端数据。`);
+      await this.fetchRoutes();
     }
   }
+
 
   getActiveRoute() {
     return this.colorRoutes[this.activeRouteId] || this.colorRoutes["route_1"];
@@ -373,7 +388,7 @@ class PopupController {
     const activeRoute = this.getActiveRoute();
     this.applyTheme(activeRoute);
 
-    await this.saveState();
+    await this.saveState(false);
     chrome.runtime.sendMessage({ action: "setActiveRoute", routeId });
     this.render();
   }
@@ -427,6 +442,18 @@ class PopupController {
 
     // 5. Render Waypoints List
     this.elWaypointsList.innerHTML = "";
+
+    if (this.routesStatus !== "ready") {
+      const loading = this.routesStatus === "loading";
+      this.elWaypointsList.innerHTML = `
+        <div class="empty-state">
+          ${SVG_EMPTY}
+          <div class="empty-text">${loading ? "正在读取云端途径点…" : "云端途径点读取失败"}</div>
+          <div class="empty-subtext">${loading ? "途径点只以云端数据为准，不使用本地缓存。" : `${this.escapeHtml(this.routesError)}。点击右上角同步按钮重试。`}</div>
+        </div>
+      `;
+      return;
+    }
 
     if (waypoints.length === 0) {
       this.elWaypointsList.innerHTML = `
@@ -1016,31 +1043,15 @@ class PopupController {
     xlsxLib.writeFile(wb, `GreenOil_${cleanRouteName}_Stops_${dateStr}.xlsx`);
   }
 
-  // Cloud Sync
+  // Re-read the lists from the cloud API
   async handleCloudSync() {
-    if (!this.authToken) {
-      this.openAuthModal();
-      return;
-    }
-
     this.elBtnSyncCloud.disabled = true;
+    this.elBtnManualSync.disabled = true;
     try {
-      const activeRoute = this.getActiveRoute();
-      const origin = activeRoute.origin || DEFAULT_ORIGIN;
-      const res = await GreenOilApi.saveMapRoutes(this.authToken, this.colorRoutes, this.activeRouteId, origin);
-
-      if (res && res.success) {
-        this.lastSyncedAt = new Date().toISOString();
-        await this.saveState();
-        this.updateAuthStatusUI();
-        alert("云端路线数据同步成功！");
-      } else {
-        alert(res?.error || "云端同步失败，请检查登录凭据");
-      }
-    } catch (e) {
-      alert("同步请求异常：" + e.message);
+      await this.fetchRoutes();
     } finally {
       this.elBtnSyncCloud.disabled = false;
+      this.elBtnManualSync.disabled = false;
     }
   }
 
@@ -1051,7 +1062,7 @@ class PopupController {
       this.elAuthLoggedView.style.display = "block";
       this.elAuthLoginForm.style.display = "none";
       this.elAuthUsernameDisplay.textContent = `操作员: ${this.authUser}`;
-      this.elAuthSyncTimeDisplay.textContent = this.lastSyncedAt ? `上次同步: ${this.lastSyncedAt.slice(0, 19).replace('T', ' ')}` : "尚未进行云端同步";
+      this.elAuthSyncTimeDisplay.textContent = this.lastSyncedAt ? `上次读取/保存云端: ${this.lastSyncedAt.slice(0, 19).replace('T', ' ')}` : "尚未进行云端同步";
     } else {
       this.elAuthDot.classList.remove("authed");
       this.elAuthDot.title = "未连接云端";
@@ -1087,19 +1098,10 @@ class PopupController {
       if (res && res.success && res.token) {
         this.authToken = res.token;
         this.authUser = res.user?.username || user;
-        this.lastSyncedAt = new Date().toISOString();
-        await this.saveState();
+        await this.saveState(false);
         this.updateAuthStatusUI();
 
-        // Pull latest routes from cloud on login
-        const cloudData = await GreenOilApi.getMapRoutes(this.authToken);
-        if (cloudData && cloudData.success && cloudData.data && cloudData.data.gce_color_routes) {
-          this.colorRoutes = { ...this.colorRoutes, ...cloudData.data.gce_color_routes };
-          this.activeRouteId = cloudData.data.gce_active_route_id || this.activeRouteId;
-          await this.saveState();
-          this.applyTheme(this.getActiveRoute());
-          this.render();
-        }
+        await this.fetchRoutes();
 
         this.closeAuthModal();
       } else {
@@ -1115,7 +1117,7 @@ class PopupController {
   async handleLogout() {
     this.authToken = "";
     this.authUser = "";
-    await this.saveState();
+    await this.saveState(false);
     this.updateAuthStatusUI();
   }
 

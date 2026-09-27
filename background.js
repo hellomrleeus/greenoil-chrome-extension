@@ -6,6 +6,7 @@
  */
 
 import { GreenOilApi } from "./api.js";
+import { createRouteStore } from "./route-store.js";
 
 const DEFAULT_ORIGIN = "Green Oil Inc. 4490 Chesswood Dr Unit 3, North York, ON M3J 2B9";
 const WORKER_URL = "https://greenoil-api.ydxhjw4j5w.workers.dev";
@@ -71,49 +72,67 @@ const COLOR_ROUTES_DEF = {
 
 const DEFAULT_ACTIVE_ROUTE_ID = "route_1";
 
-/**
- * Get or initialize the 5 color routes from storage
- */
-async function getOrInitColorRoutes() {
-  const data = await chrome.storage.local.get(["gce_color_routes", "gce_active_route_id"]);
-  let routes = data.gce_color_routes;
-  let activeId = data.gce_active_route_id;
-  let needSave = false;
+// Waypoint lists come only from the cloud API (route-store.js); the only
+// local route state is which colour route is active.
+const routeStore = createRouteStore({
+  api: GreenOilApi,
+  defs: COLOR_ROUTES_DEF,
+  getToken: async () => (await chrome.storage.local.get("authToken")).authToken || ""
+});
 
-  if (!routes || typeof routes !== "object" || Object.keys(routes).length === 0) {
-    routes = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF));
-    needSave = true;
-  } else {
-    // Ensure all 5 route keys exist
-    for (const key of Object.keys(COLOR_ROUTES_DEF)) {
-      if (!routes[key]) {
-        routes[key] = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF[key]));
-        needSave = true;
-      }
-    }
-  }
-
-  if (!activeId || !routes[activeId]) {
-    activeId = DEFAULT_ACTIVE_ROUTE_ID;
-    needSave = true;
-  }
-
-  if (needSave) {
-    await chrome.storage.local.set({
-      gce_color_routes: routes,
-      gce_active_route_id: activeId
+// Older builds kept the lists in chrome.storage.local ("gce_color_routes").
+// Hand that copy to the cloud once (only if the cloud is empty), then drop it.
+let legacyRoutesAdopted = null;
+function adoptLegacyRoutes() {
+  if (!legacyRoutesAdopted) {
+    legacyRoutesAdopted = (async () => {
+      const { gce_color_routes: legacy } = await chrome.storage.local.get("gce_color_routes");
+      if (!legacy) return;
+      if (await routeStore.adoptLegacy(legacy)) await chrome.storage.local.remove("gce_color_routes");
+    })().catch((err) => {
+      legacyRoutesAdopted = null; // retry on the next read
+      console.warn("Legacy route upload failed:", err);
     });
   }
+  return legacyRoutesAdopted;
+}
 
+async function getActiveRouteId() {
+  const { gce_active_route_id: id } = await chrome.storage.local.get("gce_active_route_id");
+  return COLOR_ROUTES_DEF[id] ? id : DEFAULT_ACTIVE_ROUTE_ID;
+}
+
+/** Fresh routes from the API plus the locally selected active route. */
+async function getOrInitColorRoutes() {
+  await adoptLegacyRoutes();
+  const [{ routes }, activeId] = await Promise.all([routeStore.load(), getActiveRouteId()]);
   return { routes, activeId, activeRoute: routes[activeId] };
+}
+
+/**
+ * Read-modify-write against the API. fn(routes, activeId, activeRoute)
+ * edits in place (return false to skip saving). Maps tabs and the badge
+ * follow the saved lists.
+ */
+async function mutateRoutes(fn) {
+  await adoptLegacyRoutes();
+  const activeId = await getActiveRouteId();
+  const out = await routeStore.mutate((routes) => fn(routes, activeId, routes[activeId]));
+  if (out.saved) {
+    await updateBadge({ routes: out.routes, activeId });
+    await broadcastRoutesChanged();
+  }
+  return { ...out, activeId, activeRoute: out.routes[activeId] };
 }
 
 /**
  * Update the toolbar extension badge count and badge background color matching active route color
  */
-async function updateBadge() {
+async function updateBadge(known) {
   try {
-    const { activeRoute } = await getOrInitColorRoutes();
+    const { activeRoute } = known
+      ? { activeRoute: known.routes[known.activeId] }
+      : await getOrInitColorRoutes();
     const count = activeRoute && Array.isArray(activeRoute.waypoints) ? activeRoute.waypoints.length : 0;
     const badgeColor = activeRoute ? activeRoute.color : "#059669";
 
@@ -124,6 +143,16 @@ async function updateBadge() {
   } catch (err) {
     console.warn("Failed to update badge:", err);
   }
+}
+
+/** Waypoint lists changed in the cloud: Maps tabs redraw their pins. */
+async function broadcastRoutesChanged() {
+  try {
+    const tabs = await chrome.tabs.query({ url: ["*://*.google.com/maps/*", "*://*.google.ca/maps/*"] });
+    for (const t of tabs) {
+      if (t.id) chrome.tabs.sendMessage(t.id, { action: "routesChanged" }).catch(() => {});
+    }
+  } catch (_) {}
 }
 
 /**
@@ -146,7 +175,6 @@ async function broadcastThemeChange(themeInfo) {
 // Initialize storage on install
 chrome.runtime.onInstalled.addListener(async () => {
   try {
-    await getOrInitColorRoutes();
     await updateBadge();
   } catch (e) {
     console.warn("onInstalled error:", e);
@@ -1394,11 +1422,38 @@ async function handleGetMatchedPlaces(message = {}) {
   return { success: true, places: [...byId.values()] };
 }
 
+const ROUTE_READ_ACTIONS = new Set([
+  "getActiveTheme", "setActiveRoute", "checkPlaceStatus", "getRouteWaypoints", "getRoutes"
+]);
+
 // Runtime Message Dispatcher
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
-      const { routes, activeId, activeRoute } = await getOrInitColorRoutes();
+      // Only route messages read the lists (one API request each).
+      let routes, activeId, activeRoute;
+      if (ROUTE_READ_ACTIONS.has(message.action)) {
+        ({ routes, activeId, activeRoute } = await getOrInitColorRoutes());
+      }
+
+      // Popup: fresh lists for rendering / its edits (whole-list replace).
+      if (message.action === "getRoutes") {
+        sendResponse({ success: true, routes, activeRouteId: activeId });
+        return;
+      }
+      if (message.action === "saveRoutes") {
+        const out = await mutateRoutes((fresh) => {
+          for (const key of Object.keys(COLOR_ROUTES_DEF)) {
+            const next = message.routes?.[key];
+            if (!next) continue;
+            fresh[key].name = next.name || fresh[key].name;
+            fresh[key].origin = next.origin || fresh[key].origin;
+            fresh[key].waypoints = Array.isArray(next.waypoints) ? next.waypoints : [];
+          }
+        });
+        sendResponse({ success: true, routes: out.routes });
+        return;
+      }
 
       // 1. Get current active theme
       if (message.action === "getActiveTheme") {
@@ -1416,7 +1471,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const newRouteId = message.routeId;
         if (routes[newRouteId]) {
           await chrome.storage.local.set({ gce_active_route_id: newRouteId });
-          await updateBadge();
+          await updateBadge({ routes, activeId: newRouteId });
           await broadcastThemeChange(routes[newRouteId]);
           sendResponse({ success: true, activeRoute: routes[newRouteId] });
         } else {
@@ -1543,46 +1598,33 @@ function isPlaceMatch(w, q) {
           return;
         }
 
-        if (!Array.isArray(activeRoute.waypoints)) {
-          activeRoute.waypoints = [];
-        }
+        let reply = null;
+        const out = await mutateRoutes((routes, activeId, activeRoute) => {
+          if (!Array.isArray(activeRoute.waypoints)) activeRoute.waypoints = [];
 
-        // Check if already in active route
-        if (activeRoute.waypoints.some(w => isPlaceMatch(w, wp))) {
-          sendResponse({
-            success: false,
-            alreadyExists: true,
-            theme: activeRoute,
-            belongTheme: activeRoute
-          });
-          return;
-        }
-
-        // Check if already in another route
-        for (const key of Object.keys(routes)) {
-          if (key === activeId) continue;
-          const r = routes[key];
-          if (r && Array.isArray(r.waypoints) && r.waypoints.some(w => isPlaceMatch(w, wp))) {
-            sendResponse({
-              success: false,
-              alreadyExistsInOther: true,
-              belongRouteName: r.name,
-              belongTheme: r
-            });
-            return;
+          // Already in the active route
+          if (activeRoute.waypoints.some(w => isPlaceMatch(w, wp))) {
+            reply = { success: false, alreadyExists: true, theme: activeRoute, belongTheme: activeRoute };
+            return false;
           }
-        }
 
-        activeRoute.waypoints.push(wp);
-        routes[activeId] = activeRoute;
+          // Already in another route
+          for (const key of Object.keys(routes)) {
+            if (key === activeId) continue;
+            const r = routes[key];
+            if (r && Array.isArray(r.waypoints) && r.waypoints.some(w => isPlaceMatch(w, wp))) {
+              reply = { success: false, alreadyExistsInOther: true, belongRouteName: r.name, belongTheme: r };
+              return false;
+            }
+          }
 
-        await chrome.storage.local.set({ gce_color_routes: routes });
-        await updateBadge();
+          activeRoute.waypoints.push(wp);
+        });
 
-        sendResponse({
+        sendResponse(reply || {
           success: true,
-          count: activeRoute.waypoints.length,
-          theme: activeRoute
+          count: out.activeRoute.waypoints.length,
+          theme: out.activeRoute
         });
         return;
       }
@@ -1596,20 +1638,16 @@ function isPlaceMatch(w, q) {
 
       // 6. Clear active route waypoints
       if (message.action === "clearActiveRoute") {
-        activeRoute.waypoints = [];
-        routes[activeId] = activeRoute;
-        await chrome.storage.local.set({ gce_color_routes: routes });
-        await updateBadge();
+        await mutateRoutes((routes, activeId, activeRoute) => { activeRoute.waypoints = []; });
         sendResponse({ success: true });
         return;
       }
 
       // 7. Update waypoints (reorder, delete, lock, sort)
       if (message.action === "updateRouteWaypoints") {
-        activeRoute.waypoints = Array.isArray(message.waypoints) ? message.waypoints : [];
-        routes[activeId] = activeRoute;
-        await chrome.storage.local.set({ gce_color_routes: routes });
-        await updateBadge();
+        await mutateRoutes((routes, activeId, activeRoute) => {
+          activeRoute.waypoints = Array.isArray(message.waypoints) ? message.waypoints : [];
+        });
         sendResponse({ success: true });
         return;
       }
@@ -1713,27 +1751,26 @@ function isPlaceMatch(w, q) {
       // 13. Update waypoint coordinates if more accurate ones are found
       if (message.action === "updateWaypointCoordinates") {
         const { name, latitude, longitude } = message;
-        if (name && typeof latitude === "number" && typeof longitude === "number") {
+        if (!name || typeof latitude !== "number" || typeof longitude !== "number") {
+          sendResponse({ success: false });
+          return;
+        }
+        const out = await mutateRoutes((routes) => {
           let updated = false;
           for (const key of Object.keys(routes)) {
             const r = routes[key];
-            if (Array.isArray(r.waypoints)) {
-              for (const wp of r.waypoints) {
-                if (wp.name === name || isPlaceMatch(wp, { name })) {
-                  wp.latitude = latitude;
-                  wp.longitude = longitude;
-                  updated = true;
-                }
+            if (!Array.isArray(r.waypoints)) continue;
+            for (const wp of r.waypoints) {
+              if (wp.name === name || isPlaceMatch(wp, { name })) {
+                if (wp.latitude !== latitude || wp.longitude !== longitude) updated = true;
+                wp.latitude = latitude;
+                wp.longitude = longitude;
               }
             }
           }
-          if (updated) {
-            await chrome.storage.local.set({ gce_color_routes: routes });
-            sendResponse({ success: true });
-            return;
-          }
-        }
-        sendResponse({ success: false });
+          return updated;
+        });
+        sendResponse({ success: out.saved });
         return;
       }
 
