@@ -291,7 +291,7 @@ test('CSS: overlay lives in the map container, click-through, pins anchored at t
   assert.match(overlay, /overflow:\s*hidden/);
   assert.match(overlay, /pointer-events:\s*none/);
   assert.ok(!/z-index:\s*998/.test(css));
-  assert.match(css, /\.greenoil-pin-body \{[^}]*left:\s*-15px[^}]*top:\s*-38px/s);
+  assert.match(css, /\.greenoil-pin-body \{[^}]*left:\s*-14px[^}]*top:\s*-29px/s);
   assert.match(css, /\.greenoil-waypoint-map-pin \{[^}]*visibility:\s*hidden;/s);
   assert.match(css, /#greenoil-pins-matched \{ z-index: 1[\s\S]*#greenoil-pins-explore \{ z-index: 2[\s\S]*#greenoil-pins-route \{ z-index: 3/);
   assert.match(css, /@keyframes greenoil-pin-rise/);

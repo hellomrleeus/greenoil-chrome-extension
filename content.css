@@ -637,44 +637,46 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
   will-change: transform !important;
 }
 
-/* Tip of the 30x38 pin sits exactly on the anchor. */
+/* Google-sized pinlet (28x32 box, drop tip at 14,29): the tip sits
+   exactly on the anchor. Soft shadow like Google's forage_shadow layer. */
 .greenoil-pin-body {
   position: absolute !important;
-  left: -15px !important;
-  top: -38px !important;
-  width: 30px !important;
-  height: 38px !important;
-  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4)) !important;
+  left: -14px !important;
+  top: -29px !important;
+  width: 28px !important;
+  height: 32px !important;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)) !important;
   pointer-events: none !important;
 }
 
 .greenoil-pin-svg {
-  width: 30px !important;
-  height: 38px !important;
+  width: 28px !important;
+  height: 32px !important;
   display: block !important;
   pointer-events: none !important;
 }
 
+/* Waypoint number: white on the coloured 20px disc (center 14,14). */
 .greenoil-pin-num {
   position: absolute !important;
-  top: 5px !important;
-  left: 0 !important;
-  width: 30px !important;
+  top: 4px !important;
+  left: 4px !important;
+  width: 20px !important;
   text-align: center !important;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Google Sans", sans-serif !important;
   font-size: 11px !important;
-  font-weight: 800 !important;
-  color: var(--pin-color, #059669) !important;
-  line-height: 18px !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  line-height: 20px !important;
+  letter-spacing: -0.3px !important;
   pointer-events: none !important;
   user-select: none !important;
 }
 
-/* MIS match pins: shield glyph centered in the white circle (circle center
-   is at 15,14 in the 30x38 pin SVG) */
+/* 探索 glyph (fork & knife / flame / shield), white, centered on the disc. */
 .greenoil-pin-shield {
   position: absolute !important;
-  left: 9px !important;
+  left: 8px !important;
   top: 8px !important;
   width: 12px !important;
   height: 12px !important;
@@ -760,7 +762,7 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 }
 
 .greenoil-explore-pin[data-state="mis"] .greenoil-pin-body {
-  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 5px rgba(79, 70, 229, 0.6)) !important;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 3px rgba(79, 70, 229, 0.55)) !important;
 }
 
 /* Rises out of the map: grows from its tip with a small overshoot. */
@@ -770,8 +772,8 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 }
 
 @keyframes greenoil-pin-rise {
-  0% { opacity: 0; transform: translateY(10px) scale(0.1, 0); }
-  55% { opacity: 1; transform: translateY(-5px) scale(1.05, 1.12); }
+  0% { opacity: 0; transform: translateY(8px) scale(0.1, 0); }
+  55% { opacity: 1; transform: translateY(-4px) scale(1.05, 1.12); }
   80% { transform: translateY(1px) scale(0.98, 0.95); }
   100% { opacity: 1; transform: none; }
 }
@@ -784,7 +786,7 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 
 @keyframes greenoil-pin-bump {
   0% { transform: none; }
-  40% { transform: translateY(-7px) scale(1.18); }
+  40% { transform: translateY(-5px) scale(1.18); }
   100% { transform: none; }
 }
 

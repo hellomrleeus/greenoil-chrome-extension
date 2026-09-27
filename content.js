@@ -225,7 +225,17 @@ if (window.__greenoil_injected__) {
   // it, and the container's overflow:hidden clips pins to the map.
   // ==========================================
 
-  const SVG_MIS_SHIELD_SM = `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="#4f46e5" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>`;
+  // Google's POI pinlet (the restaurant search-result marker), same
+  // geometry: 28x32 box, white-rimmed drop (head r12 at 14,14, tip at
+  // 14,29), a 20px coloured disc and a ~12px white glyph in the middle.
+  const PIN_OUTLINE_PATH = "M14 2C7.373 2 2 7.373 2 14c0 6.6 8 11.5 12 15 4-3.5 12-8.4 12-15 0-6.627-5.373-12-12-12z";
+  function pinSvg(color, discClass = "") {
+    return `<svg viewBox="0 0 28 32" class="greenoil-pin-svg" aria-hidden="true">
+          <path d="${PIN_OUTLINE_PATH}" fill="#ffffff"/>
+          <circle cx="14" cy="14" r="10"${discClass ? ` class="${discClass}"` : ""} fill="${color}"/>
+        </svg>`;
+  }
+  const pinGlyph = (d) => `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="#ffffff" d="${d}"/></svg>`;
 
   // Topmost full-size map canvas. Newer Maps stacks a WebGL canvas and the
   // Worker's OffscreenCanvas at the same size; pins must go after the later
@@ -279,10 +289,7 @@ if (window.__greenoil_injected__) {
     pin.dataset.greenoilLng = String(lng);
     pin.innerHTML = `
       <div class="greenoil-pin-body">
-        <svg viewBox="0 0 30 38" class="greenoil-pin-svg" aria-hidden="true">
-          <path d="M15 0C6.716 0 0 6.716 0 15c0 10.5 15 23 15 23s15-12.5 15-23c0-8.284-6.716-15-15-15z" fill="${color}"/>
-          <circle cx="15" cy="14" r="9" fill="#ffffff"/>
-        </svg>
+        ${pinSvg(color)}
         ${innerHtml}
       </div>`;
     return pin;
@@ -301,7 +308,7 @@ if (window.__greenoil_injected__) {
       const lng = parseFloat(wp.longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
       frag.appendChild(makePin(lat, lng, "waypoint", themeColor,
-        `<span class="greenoil-pin-num" style="color:${themeColor}">${idx + 1}</span>`));
+        `<span class="greenoil-pin-num">${idx + 1}</span>`));
     });
 
     document.getElementById("greenoil-pins-route").replaceChildren(frag);
@@ -344,7 +351,8 @@ if (window.__greenoil_injected__) {
   const FLAME_PATH = "M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z";
   const SHIELD_PATH = "M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z";
   const SVG_MATCH_MIS = `<svg viewBox="0 0 24 24"><path d="${SHIELD_PATH}"/></svg>`;
-  const SVG_FLAME_SM = `<svg viewBox="0 0 24 24" width="12" height="12"><path fill="#d97706" d="${FLAME_PATH}"/></svg>`;
+  const RESTAURANT_PATH = "M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z";
+  const EXPLORE_GLYPHS = { candidate: pinGlyph(RESTAURANT_PATH), fried: pinGlyph(FLAME_PATH), mis: pinGlyph(SHIELD_PATH) };
   const EXPLORE_COLORS = { candidate: "#9ca3af", fried: "#f59e0b", mis: "#4f46e5" };
   const PLACE_ID_RE = /!1s(0x[0-9a-f]+:0x[0-9a-f]+)/i;
 
@@ -376,9 +384,7 @@ if (window.__greenoil_injected__) {
   }
 
   function exploreIconHtml(state) {
-    if (state === "mis") return `<span class="greenoil-pin-shield">${SVG_MIS_SHIELD_SM}</span>`;
-    if (state === "fried") return `<span class="greenoil-pin-shield">${SVG_FLAME_SM}</span>`;
-    return "";
+    return `<span class="greenoil-pin-shield">${EXPLORE_GLYPHS[state] || EXPLORE_GLYPHS.candidate}</span>`;
   }
 
   function paintExplorePin(entry) {
@@ -398,10 +404,7 @@ if (window.__greenoil_injected__) {
     el.dataset.greenoilLng = String(entry.place.longitude);
     el.innerHTML = `
       <div class="greenoil-pin-body greenoil-explore-rise" style="animation-delay:${Math.min(order * 45, 900)}ms">
-        <svg viewBox="0 0 30 38" class="greenoil-pin-svg" aria-hidden="true">
-          <path class="greenoil-explore-fill" d="M15 0C6.716 0 0 6.716 0 15c0 10.5 15 23 15 23s15-12.5 15-23c0-8.284-6.716-15-15-15z"/>
-          <circle cx="15" cy="14" r="9" fill="#ffffff"/>
-        </svg>
+        ${pinSvg(EXPLORE_COLORS.candidate, "greenoil-explore-fill")}
         <span class="greenoil-explore-icon"></span>
       </div>`;
     entry.el = el;
