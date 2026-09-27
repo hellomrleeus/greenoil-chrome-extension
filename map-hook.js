@@ -18,7 +18,13 @@
  *    the container's overflow:hidden clips it to the map.
  *    This script only writes each pin's transform/visibility.
  *
- *    Fallback (raster/Lite mode, or a future shader change detected by
+ *    Newer Google Maps renders in a Worker (OffscreenCanvas), so the WebGL
+ *    calls happen off this thread. The page still posts the camera to
+ *    that Worker every frame (Worker.postMessage, protobuf payload; see
+ *    pin-math.js findProtoCamera): we read it there and move the pins on
+ *    the next animation frame, when the Worker draws that camera.
+ *
+ *    Fallback (Lite mode, or a future format change detected by
  *    cross-checking the settled URL camera): URL camera, with pins hidden
  *    while the map is being manipulated so they never float.
  *
@@ -43,9 +49,12 @@
   var MAX_GLIDE_SCREENS = 2;  // glide only if target is within 2 viewports
 
   // ---- Camera state ------------------------------------------------
-  var gl = null;              // {canvas, cx, cy, s, m, t}
+  var gl = null;              // {canvas, cx, cy, s, m, t}   main-thread WebGL renderer
   var glDisabled = false;     // set if GL camera disagrees with settled URL
   var glStrikes = 0;
+  var wc = null;              // {lat, lng, zoom, tilt, heading, t}   Worker renderer
+  var wcDisabled = false;
+  var wcStrikes = 0;
   var urlCam = null;          // {lat, lng, zoom}
   var interacting = false;    // URL fallback only: hide pins mid-gesture
 
@@ -119,6 +128,31 @@
   try { hook(window.WebGLRenderingContext && WebGLRenderingContext.prototype); } catch (_) {}
   try { hook(window.WebGL2RenderingContext && WebGL2RenderingContext.prototype); } catch (_) {}
 
+  // Off-thread renderer: read the camera the page sends to the Worker.
+  try {
+    var wpost = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (data) {
+      try {
+        var payload = data && data.payload;
+        if (payload instanceof Uint8Array && payload.length >= 30 && payload.length <= 1024) {
+          var cam = M.findProtoCamera(payload);
+          if (cam) commitWorker(cam);
+        }
+      } catch (_) {}
+      return wpost.apply(this, arguments);
+    };
+  } catch (_) {}
+
+  function commitWorker(cam) {
+    var p = wc;
+    if (p && p.lat === cam.lat && p.lng === cam.lng && p.zoom === cam.zoom &&
+        p.tilt === cam.tilt && p.heading === cam.heading) return;
+    cam.t = now();
+    wc = cam;
+    // The Worker draws this camera on its next frame: move the pins then.
+    queueFrameFlush();
+  }
+
   function commit(canvas, cx, cy, s, m) {
     var g = gl;
     if (g && g.canvas === canvas && g.cx === cx && g.cy === cy && g.s === s &&
@@ -128,14 +162,58 @@
     }
     gl = { canvas: canvas, cx: cx, cy: cy, s: s, m: m, t: now() };
     queueFlush();
-    if (glide) glideObserve();
   }
 
   function liveGL() {
     return !glDisabled && gl && gl.canvas.isConnected ? gl : null;
   }
 
+  function liveWorker() {
+    return !wcDisabled && wc ? wc : null;
+  }
+
+  // The per-frame camera in use: {kind: "gl"|"worker", ...} or null (URL).
+  function liveCam() {
+    var g = liveGL();
+    var w = liveWorker();
+    if (g && (!w || g.t >= w.t - 1000)) return { kind: "gl", gl: g, t: g.t };
+    if (w) return { kind: "worker", cam: w, t: w.t };
+    return null;
+  }
+
+  // Topmost full-size map canvas (newer Maps stacks a WebGL canvas and the
+  // Worker's OffscreenCanvas of the same size; the later one is on top).
+  var topCanvas = null;
+  function mapCanvasTop() {
+    if (topCanvas && topCanvas.isConnected && topCanvas.clientWidth > 0) return topCanvas;
+    var best = null;
+    var bestArea = 0;
+    var list = document.querySelectorAll("canvas.H1VXrf");
+    for (var i = 0; i < list.length; i++) {
+      var area = list[i].clientWidth * list[i].clientHeight;
+      if (area > 0 && area >= bestArea) { best = list[i]; bestArea = area; }
+    }
+    topCanvas = best;
+    return best;
+  }
+
+  function projectLive(live, wx, wy) {
+    return live.kind === "gl"
+      ? M.projectGL(wx, wy, live.gl, box.w, box.h)
+      : M.projectFlat(wx, wy, live.cam, box.w, box.h);
+  }
+
   // ---- Frame-synchronous flush ---------------------------------------
+  var frameFlushQueued = false;
+  function queueFrameFlush() {
+    if (frameFlushQueued) return;
+    frameFlushQueued = true;
+    requestAnimationFrame(function () {
+      frameFlushQueued = false;
+      flush();
+    });
+  }
+
   var flushQueued = false;
   function queueFlush() {
     if (flushQueued) return;
@@ -214,21 +292,24 @@
     bindLayer();
     if (!layer || !layer.isConnected) return;
 
-    var g = liveGL();
-    var canvas = g ? g.canvas : document.querySelector("canvas.H1VXrf");
+    var live = liveCam();
+    var canvas = live && live.kind === "gl" ? live.gl.canvas : mapCanvasTop();
     if (!canvas) return;
     trackCanvas(canvas);
-    layer.setAttribute("data-greenoil-mode", g ? "gl" : "url");
+    layer.setAttribute("data-greenoil-mode", live ? live.kind : "url");
+    if (glide) glideObserve(live);
     if (pins.length === 0) return;
 
-    var zoom = g ? M.zoomFromScale(g.s) : (urlCam ? urlCam.zoom : 0);
-    var visible = box.w > 0 && box.h > 0 && (g || (urlCam && !interacting));
+    var zoom = live ? (live.kind === "gl" ? M.zoomFromScale(live.gl.s) : live.cam.zoom)
+                    : (urlCam ? urlCam.zoom : 0);
+    var visible = box.w > 0 && box.h > 0 &&
+      (live ? live.kind === "gl" || M.isFlatCamera(live.cam) : (urlCam && !interacting));
 
     for (var i = 0; i < pins.length; i++) {
       var p = pins[i];
       if (!visible || zoom < p.minZoom) { setShown(p, false); continue; }
-      var pt = g ? M.projectGL(p.wx, p.wy, g, box.w, box.h)
-                 : M.projectUrl(p.wx, p.wy, urlCam, box.w, box.h);
+      var pt = live ? projectLive(live, p.wx, p.wy)
+                    : M.projectUrl(p.wx, p.wy, urlCam, box.w, box.h);
       if (!M.inCanvas(pt, box.w, box.h, CLIP_MARGIN)) { setShown(p, false); continue; }
       p.el.style.transform = "translate3d(" + (box.left + pt.x).toFixed(2) + "px," +
         (box.top + pt.y).toFixed(2) + "px,0)";
@@ -249,13 +330,24 @@
     clearTimeout(checkTimer);
     checkTimer = setTimeout(function () {
       var g = gl;
-      if (!g || glDisabled || now() - g.t < 400 || !box.w) return;
-      if (M.glAgreesWithUrl(g, urlCam, box.w, box.h)) {
-        glStrikes = 0;
-      } else if (++glStrikes >= 2) {
-        glDisabled = true;
-        console.warn("[GreenOil] map camera signature mismatch; pins fall back to URL camera");
-        queueFlush();
+      if (g && !glDisabled && now() - g.t >= 400 && box.w) {
+        if (M.glAgreesWithUrl(g, urlCam, box.w, box.h)) {
+          glStrikes = 0;
+        } else if (++glStrikes >= 2) {
+          glDisabled = true;
+          console.warn("[GreenOil] map camera signature mismatch; pins fall back to URL camera");
+          queueFlush();
+        }
+      }
+      var w = wc;
+      if (w && !wcDisabled && now() - w.t >= 400) {
+        if (M.cameraAgreesWithUrl(w, urlCam)) {
+          wcStrikes = 0;
+        } else if (++wcStrikes >= 2) {
+          wcDisabled = true;
+          console.warn("[GreenOil] renderer camera mismatch; pins fall back to URL camera");
+          queueFlush();
+        }
       }
     }, 700);
   }
@@ -271,7 +363,7 @@
   window.addEventListener("popstate", readUrlCamera);
 
   function onGestureStart(e) {
-    if (liveGL()) return; // GL mode tracks every frame; nothing to hide
+    if (liveCam()) return; // a per-frame camera tracks every frame; nothing to hide
     if (e.target && e.target.tagName === "CANVAS") {
       interacting = true;
       queueFlush();
@@ -302,7 +394,8 @@
     // camera. (The URL is no signal: Google rewrites it even when stuck.)
     // Generous timeout: a freshly loaded page can take a few seconds.
     setTimeout(function () {
-      var moved = !!gl && gl.t > t0;
+      var live = liveCam();
+      var moved = !!live && live.t > t0;
       if (!moved && panelLabel() === label0) location.assign(path);
     }, 6000);
   }
@@ -317,14 +410,15 @@
 
   // Closed-loop glide. The map follows the mouse 1:1 once Google's drag
   // threshold is crossed, so mouse = start + eased path + offset, where
-  // offset (threshold slack) is measured on every GL frame as
+  // offset (threshold slack) is measured on every camera frame as
   // "how far the mouse has moved" minus "how far the target has moved".
   function startGlide(lat, lng) {
-    var g = liveGL();
-    if (!g || !box.w) return false;
+    var live = liveCam();
+    if (!live || !box.w) return false;
+    if (live.kind === "worker" && !M.isFlatCamera(live.cam)) return false;
     var wx = M.worldX(lng);
     var wy = M.worldY(lat);
-    var p0 = M.projectGL(wx, wy, g, box.w, box.h);
+    var p0 = projectLive(live, wx, wy);
     if (!p0) return false;
     var dx = box.w / 2 - p0.x;
     var dy = box.h / 2 - p0.y;
@@ -332,7 +426,8 @@
     if (dist < 2) return true;
     if (dist > MAX_GLIDE_SCREENS * Math.max(box.w, box.h)) return false;
 
-    var rect = g.canvas.getBoundingClientRect();
+    var canvas = live.kind === "gl" ? live.gl.canvas : mapCanvasTop();
+    var rect = canvas.getBoundingClientRect();
     // Grab the map at the canvas center: always on the map surface.
     var sx = rect.left + box.w / 2;
     var sy = rect.top + box.h / 2;
@@ -342,7 +437,7 @@
       sx: sx, sy: sy, mx: sx, my: sy, ox: 0, oy: 0, settle: 0, frames: 0,
     };
     window.addEventListener("mousedown", onUserMouseDown, true);
-    mouse("mousedown", sx, sy, g.canvas);
+    mouse("mousedown", sx, sy, canvas);
     requestAnimationFrame(glideTick);
     return true;
   }
@@ -359,10 +454,11 @@
     mouse("mouseup", gs.mx, gs.my);
   }
 
-  // A GL frame rendered with the latest synthetic mouse position.
-  function glideObserve() {
+  // A camera frame produced with the latest synthetic mouse position.
+  function glideObserve(live) {
     var gs = glide;
-    var cur = M.projectGL(gs.wx, gs.wy, gl, box.w, box.h);
+    if (!live || !gs) return;
+    var cur = projectLive(live, gs.wx, gs.wy);
     if (!cur) return;
     gs.ox = (gs.mx - gs.sx) - (cur.x - gs.from.x);
     gs.oy = (gs.my - gs.sy) - (cur.y - gs.from.y);
@@ -372,7 +468,7 @@
   function glideTick() {
     var gs = glide;
     if (!gs) return;
-    if (!liveGL() || ++gs.frames > 240) { endGlide(); return; }
+    if (!liveCam() || ++gs.frames > 240) { endGlide(); return; }
     var t = now() - gs.t0;
     var e = M.easeInOutCubic(t / gs.dur);
     // Whole pixels: Google applies mouse deltas in integer px, and
@@ -416,12 +512,15 @@
 
   // Diagnostics (DevTools console): __greenoil_map_hook_state__()
   window.__greenoil_map_hook_state__ = function () {
-    var g = liveGL();
+    var live = liveCam();
+    var g = live && live.kind === "gl" ? live.gl : null;
+    var w = live && live.kind === "worker" ? live.cam : null;
     return {
-      mode: g ? "gl" : "url",
+      mode: live ? live.kind : "url",
       glDisabled: glDisabled,
-      zoom: g ? M.zoomFromScale(g.s) : urlCam && urlCam.zoom,
-      center: g ? M.worldToLatLng(g.cx, g.cy) : urlCam,
+      workerDisabled: wcDisabled,
+      zoom: g ? M.zoomFromScale(g.s) : w ? w.zoom : urlCam && urlCam.zoom,
+      center: g ? M.worldToLatLng(g.cx, g.cy) : w ? { lat: w.lat, lng: w.lng } : urlCam,
       pins: pins.length,
       box: { left: box.left, top: box.top, w: box.w, h: box.h },
     };

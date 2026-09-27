@@ -112,6 +112,9 @@ function bootHook({ href = 'https://www.google.com/maps/@43.6426128,-79.3871855,
   GLProto.prototype.uniform3fv = function () {};
   GLProto.prototype.uniformMatrix4fv = function () {};
   GLProto.prototype.uniform1f = function () {};
+  const workerPosts = [];
+  class Worker { postMessage(d) { workerPosts.push(d); } }
+  const frames = [];
   const location = { href, assign: (p) => dispatched.push({ assign: p }) };
   const window = {
     addEventListener: (t, fn) => { (listeners[t] = listeners[t] || []).push(fn); },
@@ -124,7 +127,10 @@ function bootHook({ href = 'https://www.google.com/maps/@43.6426128,-79.3871855,
   const context = vm.createContext({
     window, location, console, Promise, Math, isFinite, parseFloat, WeakMap, Array,
     setTimeout: () => 0, clearTimeout: () => {},
-    requestAnimationFrame: () => 0,
+    requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+    Worker,
+    Uint8Array,
+    DataView,
     performance: { now: () => 1000 },
     history: {
       replaceState: () => {},
@@ -135,6 +141,7 @@ function bootHook({ href = 'https://www.google.com/maps/@43.6426128,-79.3871855,
       documentElement: { setAttribute() {} },
       getElementById: (id) => (id === 'greenoil-waypoint-pin-layer' ? layer : null),
       querySelector: (sel) => (sel.startsWith('canvas') ? canvas : null),
+      querySelectorAll: (sel) => (sel.startsWith('canvas') ? [canvas] : []),
       dispatchEvent: (e) => dispatched.push(e),
     },
     ResizeObserver: class { observe() {} disconnect() {} },
@@ -154,7 +161,9 @@ function bootHook({ href = 'https://www.google.com/maps/@43.6426128,-79.3871855,
     gl.uniform1f(null, s);
   };
   const fire = (type, data) => (listeners[type] || []).forEach((fn) => fn({ source: window, data }));
-  return { window, context, gl, drawFrame, pins, pushed, dispatched, fire };
+  const runFrames = () => { while (frames.length) frames.shift()(); };
+  const worker = new Worker();
+  return { window, context, gl, drawFrame, pins, pushed, dispatched, fire, listeners, worker, workerPosts, runFrames };
 }
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -291,3 +300,59 @@ test('CSS: overlay lives in the map container, click-through, pins anchored at t
   assert.ok(!css.includes('.greenoil-pin-tooltip'));
 });
 
+// ---------- newer Google Maps: renderer in a Worker (OffscreenCanvas) ----------
+
+// protobuf encoder for test payloads (same layout as captured from Google Maps)
+const pbVarint = (n) => { const o = []; do { let b = n & 0x7f; n = Math.floor(n / 128); if (n) b |= 0x80; o.push(b); } while (n); return o; };
+const pbDouble = (f, v) => { const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v, true); return [...pbVarint(f * 8 + 1), ...b]; };
+const pbFloat = (f, v) => { const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, v, true); return [...pbVarint(f * 8 + 5), ...b]; };
+const pbMsg = (f, bytes) => [...pbVarint(f * 8 + 2), ...pbVarint(bytes.length), ...bytes];
+function cameraPayload(lat, lng, zoom, { tilt = 0, heading = 0 } = {}) {
+  const ll = pbMsg(3, [...pbDouble(1, lat), ...pbDouble(2, lng)]);
+  const cam = [...pbMsg(1, ll), ...pbDouble(2, zoom), ...pbFloat(5, tilt), ...pbFloat(6, heading), ...pbFloat(8, 13.1), ...pbVarint(11 * 8), 1];
+  return new Uint8Array(pbMsg(8, pbMsg(2, cam)));
+}
+
+test('renderer camera is decoded from the Worker command payload (52 bytes like the real one)', () => {
+  const payload = cameraPayload(43.65885610608034, -79.3547376375949, 16);
+  assert.equal(payload.length, 52);
+  assert.deepEqual(pinMath.findProtoCamera(payload), { lat: 43.65885610608034, lng: -79.3547376375949, zoom: 16, tilt: 0, heading: 0 });
+  // other renderer commands and junk are ignored
+  assert.equal(pinMath.findProtoCamera(new Uint8Array([234, 1, 21, 18, 17, 29, 0, 0, 168, 67, 37, 0, 0, 252, 67, 45, 0, 0, 128, 63, 48, 1, 24, 0])), null);
+  assert.equal(pinMath.findProtoCamera(new Uint8Array([255, 255, 255, 1, 2, 3])), null);
+  assert.equal(pinMath.findProtoCamera(new Uint8Array(pbMsg(1, pbMsg(3, [...pbDouble(1, 400), ...pbDouble(2, 0)])).concat(pbDouble(2, 16)))), null, 'lat out of range');
+});
+
+test('flat camera check: rotated or tilted views are not projected flat', () => {
+  for (const h of [0, 359.8, 0.2, -0.3, 720]) assert.ok(pinMath.isFlatCamera({ tilt: 0, heading: h }), `heading ${h}`);
+  assert.ok(!pinMath.isFlatCamera({ tilt: 0, heading: 90 }));
+  assert.ok(!pinMath.isFlatCamera({ tilt: 30, heading: 0 }));
+  assert.ok(pinMath.cameraAgreesWithUrl({ lat: 43.6550953501167, lng: -79.3443414244349, zoom: 16 }, { lat: 43.6550954, lng: -79.3443414, zoom: 16 }));
+  assert.ok(!pinMath.cameraAgreesWithUrl({ lat: 43.66, lng: -79.34, zoom: 16 }, { lat: 43.6550954, lng: -79.3443414, zoom: 16 }));
+});
+
+test('map-hook follows the Worker renderer camera every frame (no hiding while dragging)', () => {
+  const h = bootHook();
+  const cam = REAL.url;
+  h.worker.postMessage({ command: 9, methodType: 8, payload: cameraPayload(cam.lat, cam.lng, cam.zoom), returnType: 2, v: 20 });
+  assert.equal(h.workerPosts.length, 1, 'message still reaches the Worker');
+  h.runFrames();
+  const st = h.window.__greenoil_map_hook_state__();
+  assert.equal(st.mode, 'worker');
+  const t = h.pins[0].style.transform;
+  const [, x, y] = t.match(/translate3d\(([-\d.]+)px,([-\d.]+)px,0\)/).map(Number);
+  assert.ok(Math.abs(x - REAL.cnTower.x) < 1 && Math.abs(y - REAL.cnTower.y) < 1, t);
+  assert.equal(h.pins[0].style.visibility, 'visible');
+
+  // a drag: the page sends the moved camera; pins move on the next frame and stay visible
+  (h.listeners.mousedown || []).forEach((fn) => fn({ target: { tagName: 'CANVAS' } }));
+  h.worker.postMessage({ command: 9, methodType: 8, payload: cameraPayload(cam.lat, cam.lng + 0.001, cam.zoom + 0.25) });
+  h.runFrames();
+  assert.notEqual(h.pins[0].style.transform, t);
+  assert.equal(h.pins[0].style.visibility, 'visible', 'not hidden mid-gesture');
+
+  // rotated / tilted view: hide rather than misplace
+  h.worker.postMessage({ command: 9, methodType: 8, payload: cameraPayload(cam.lat, cam.lng, cam.zoom, { heading: 45 }) });
+  h.runFrames();
+  assert.equal(h.pins[0].style.visibility, 'hidden');
+});
