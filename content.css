@@ -757,6 +757,37 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
   display: none !important;
 }
 
+/* Place name beside the pin, Google-label style: to the right of the pin
+   head (center 15px above the anchor), coloured text with a white halo. */
+.greenoil-explore-label {
+  position: absolute !important;
+  left: 13px !important;
+  top: -15px !important;
+  transform: translateY(-50%);
+  width: max-content !important;
+  max-width: 130px !important;
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden !important;
+  font: 500 12px/14px Roboto, "Google Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  color: #5f6368 !important;
+  text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff !important;
+  white-space: normal !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  animation: greenoil-label-in 0.3s ease both;
+}
+.greenoil-explore-pin[data-state="fried"] .greenoil-explore-label { color: #b45309 !important; }
+.greenoil-explore-pin[data-state="mis"] .greenoil-explore-label { color: #4338ca !important; }
+/* Resident pins can number in the hundreds: icon only. */
+.greenoil-matched-pin .greenoil-explore-label { display: none !important; }
+
+@keyframes greenoil-label-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .greenoil-explore-fill {
   transition: fill 0.35s ease;
 }
@@ -792,7 +823,8 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 
 @media (prefers-reduced-motion: reduce) {
   .greenoil-explore-rise,
-  .greenoil-explore-bump { animation: none; }
+  .greenoil-explore-bump,
+  .greenoil-explore-label { animation: none; }
 }
 
 /* ===================================================

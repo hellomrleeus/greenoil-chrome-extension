@@ -406,7 +406,8 @@ if (window.__greenoil_injected__) {
       <div class="greenoil-pin-body greenoil-explore-rise" style="animation-delay:${Math.min(order * 45, 900)}ms">
         ${pinSvg(EXPLORE_COLORS.candidate, "greenoil-explore-fill")}
         <span class="greenoil-explore-icon"></span>
-      </div>`;
+      </div>
+      <span class="greenoil-explore-label" style="animation-delay:${Math.min(order * 45, 900) + 250}ms">${escapeHtml(entry.place.name || "")}</span>`;
     entry.el = el;
     paintExplorePin(entry);
     return el;
