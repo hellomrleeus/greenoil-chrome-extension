@@ -601,6 +601,14 @@
    translate3d() in the same frame Google draws the map.
    =================================================== */
 
+/* Google's photo / Street View viewer draws the picture in the map
+   container: our pins and the 探索 bar must not float over it
+   (map-hook.js sets data-greenoil-imagery from the URL). */
+html[data-greenoil-imagery] #greenoil-waypoint-pins-overlay,
+html[data-greenoil-imagery] #greenoil-pins-control-bar {
+  display: none !important;
+}
+
 #greenoil-waypoint-pins-overlay {
   position: absolute !important;
   inset: 0 !important;

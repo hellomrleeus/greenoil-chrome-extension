@@ -138,7 +138,7 @@ function bootHook({ href = 'https://www.google.com/maps/@43.6426128,-79.3871855,
       pushState: (state, _t, url) => { pushed.push({ state, url }); location.href = 'https://www.google.com' + url; },
     },
     document: {
-      documentElement: { setAttribute() {} },
+      documentElement: { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } },
       getElementById: (id) => (id === 'greenoil-waypoint-pin-layer' ? layer : null),
       querySelector: (sel) => (sel.startsWith('canvas') ? canvas : null),
       querySelectorAll: (sel) => (sel.startsWith('canvas') ? [canvas] : []),
@@ -355,4 +355,32 @@ test('map-hook follows the Worker renderer camera every frame (no hiding while d
   h.worker.postMessage({ command: 9, methodType: 8, payload: cameraPayload(cam.lat, cam.lng, cam.zoom, { heading: 45 }) });
   h.runFrames();
   assert.equal(h.pins[0].style.visibility, 'hidden');
+});
+
+// ---------- Google's photo / Street View viewer ----------
+
+test('imagery URLs (place photos, Street View, photo spheres) are recognised', () => {
+  for (const u of [
+    'https://www.google.com/maps/@43.6414378,-79.3893532,3a,90y,90t/data=!3m7!1e1!3m5!1sCIHM0ogKEICAgID4y_DalQE!2e10',
+    'https://www.google.com/maps/place/X/@43.8039843,-79.335716,3a,75y,90t/data=!3m8!1e2!3m6!1sAF1Qip',
+  ]) assert.ok(pinMath.isImageryUrl(u), u);
+  for (const u of [
+    'https://www.google.com/maps/@43.6532,-79.3832,16z',
+    'https://www.google.com/maps/place/Rogers+Centre/@43.641804,-79.3891419,17z/data=!3m1!4b1',
+    'https://www.google.com/maps/search/restaurants/@43.8,-79.3,15.5z',
+  ]) assert.ok(!pinMath.isImageryUrl(u), u);
+});
+
+test('map-hook flags the imagery viewer so pins and the 探索 bar hide over photos', () => {
+  const h = bootHook();
+  const attrs = h.context.document.documentElement.attrs;
+  assert.equal(attrs['data-greenoil-imagery'], undefined, 'map view');
+  h.context.history.replaceState(null, '', '');
+  h.context.location.href = 'https://www.google.com/maps/@43.6414378,-79.3893532,3a,90y,90t/data=!3m7!1e1';
+  h.context.history.replaceState(null, '', '');
+  assert.equal(attrs['data-greenoil-imagery'], '1', 'photo viewer opened');
+  h.context.location.href = 'https://www.google.com/maps/@43.6414378,-79.3893532,15z';
+  (h.listeners.popstate || []).forEach((fn) => fn({}));
+  assert.equal(attrs['data-greenoil-imagery'], undefined, 'back on the map');
+  assert.match(css, /html\[data-greenoil-imagery\] #greenoil-waypoint-pins-overlay,\s*html\[data-greenoil-imagery\] #greenoil-pins-control-bar \{\s*display: none !important;/);
 });

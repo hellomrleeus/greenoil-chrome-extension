@@ -241,6 +241,15 @@ function parseCameraFromUrl(url) {
  * in-app router can open these via popstate: panel + camera animate in
  * place, no page reload.
  */
+/**
+ * Google's full-screen imagery viewer (place photos, Street View, photo
+ * spheres) replaces the map with a picture in the same container; its URL
+ * camera is "@lat,lng,3a,75y,90t" instead of "@lat,lng,17z".
+ */
+function isImageryUrl(url) {
+  return /@-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?,\d+(?:\.\d+)?a,/.test(String(url || ""));
+}
+
 function isRoutablePlacePath(path) {
   return typeof path === "string" &&
     /^\/maps\/place\//.test(path) &&
@@ -255,6 +264,7 @@ function easeInOutCubic(a) {
 }
 
 const api = {
+  isImageryUrl,
   readProtobuf,
   findProtoCamera,
   projectFlat,

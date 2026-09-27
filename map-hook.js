@@ -319,7 +319,22 @@
 
   // ---- URL camera (fallback + GL sanity check) -----------------------
   var checkTimer = 0;
+  // Photo / Street View viewer: the picture is drawn in the map container,
+  // so the whole pin layer (and the 探索 control bar) must hide (CSS keys
+  // off this attribute) until the URL is a map camera again.
+  var imagery = null;
+  function updateImagery() {
+    var on = M.isImageryUrl(location.href);
+    if (on === imagery) return;
+    imagery = on;
+    try {
+      if (on) document.documentElement.setAttribute("data-greenoil-imagery", "1");
+      else document.documentElement.removeAttribute("data-greenoil-imagery");
+    } catch (_) {}
+  }
+
   function readUrlCamera() {
+    updateImagery();
     var c = M.parseCameraFromUrl(location.href);
     if (!c) return;
     urlCam = c;
