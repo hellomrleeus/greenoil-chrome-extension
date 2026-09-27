@@ -830,12 +830,15 @@ test('resident pins layer + popup toggle (default on)', () => {
   assert.match(content, /changes\.gce_show_matched/);
   assert.match(content, /explore\.places\.has\(m\.place\.placeId\)\) \|\| isOnRoute\(m\.place\)/, 'no duplicate pins; waypoint wins');
   assert.match(content, /const known = matched\.get\(place\.placeId\)/, 'explore starts from known matches');
-  assert.match(css, /#greenoil-pins-matched\.greenoil-matched-off \{ display: none/);
+  assert.match(content, /for \(const id of \["greenoil-pins-matched", "greenoil-pins-explore"\]\)/);
+  assert.match(css, /\.greenoil-matched-off \.greenoil-explore-pin\[data-state="mis"\]/);
+  assert.match(css, /\.greenoil-matched-off \.greenoil-explore-pin\[data-state="fried"\]/);
+  assert.doesNotMatch(css, /#greenoil-pins-matched\.greenoil-matched-off \{ display: none/);
   // grey pins: own toggle, loaded per viewport and capped
   assert.match(popupHtml, /<input type="checkbox" id="toggleCheckedPins" class="custom-checkbox" checked>/);
   assert.match(popupJs, /gce_show_checked !== false/);
   assert.match(content, /changes\.gce_show_checked/);
-  assert.match(css, /\.greenoil-checked-off \.greenoil-checked-pin \{ display: none/);
+  assert.match(css, /\.greenoil-checked-off \.greenoil-explore-pin\[data-state="candidate"\] \{\s+display: none !important/);
   assert.match(content, /action: "getMatchedPlaces", bounds: area\.bounds, checked: area\.checked, checkedMax: CHECKED_MAX/);
   assert.match(content, /if \(!entry\.customer && !entry\.fried && !entry\.checked\)/, 'checked places stay as grey resident pins');
   // zoomed out: clusters, drawn by map-hook below the pins' zoom limit

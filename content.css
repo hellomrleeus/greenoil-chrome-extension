@@ -693,12 +693,16 @@
 /* Clustered map, 探索 batch done: its places are in the clusters now. */
 #greenoil-pins-explore.greenoil-folded { display: none !important; }
 
-/* Popup "地图显示已匹配商家" unchecked */
-#greenoil-pins-matched.greenoil-matched-off { display: none !important; }
+/* Both cached and live results follow the popup layer switches.
+   data-state updates as results arrive, so newly painted pins stay filtered. */
+.greenoil-pin-group.greenoil-matched-off .greenoil-explore-pin[data-state="mis"],
+.greenoil-pin-group.greenoil-matched-off .greenoil-explore-pin[data-state="fried"],
+.greenoil-pin-group.greenoil-checked-off .greenoil-explore-pin[data-state="candidate"] {
+  display: none !important;
+}
 
 /* Grey resident pins (checked, no match): smaller and quieter so hundreds
    of them don't bury the coloured ones. Popup "地图显示已检查地点" hides them. */
-#greenoil-pins-matched.greenoil-checked-off .greenoil-checked-pin { display: none !important; }
 .greenoil-checked-pin .greenoil-pin-body {
   transform: scale(0.7);
   transform-origin: 50% 100%;

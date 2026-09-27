@@ -919,12 +919,21 @@ if (window.__greenoil_injected__) {
   function renderMatchedPins() {
     const group = document.getElementById("greenoil-pins-matched");
     if (!group) return;
-    group.classList.toggle("greenoil-matched-off", !showMatched);
-    group.classList.toggle("greenoil-checked-off", !showChecked);
+    for (const id of ["greenoil-pins-matched", "greenoil-pins-explore"]) {
+      const resultGroup = document.getElementById(id);
+      resultGroup?.classList.toggle("greenoil-matched-off", !showMatched);
+      resultGroup?.classList.toggle("greenoil-checked-off", !showChecked);
+    }
     document.getElementById("greenoil-pins-explore")?.classList.toggle("greenoil-folded", !sessionPinsShown());
     const frag = document.createDocumentFragment();
     for (const c of residentClusters) { // under the single pins
-      if (!c.el) c.el = makeClusterPin(c);
+      const visible = visibleCluster(c);
+      if (!visible.count) continue;
+      const key = `${visible.mis}:${visible.fried}:${visible.checked}`;
+      if (!c.el || c.visibleKey !== key) {
+        c.el = makeClusterPin(visible);
+        c.visibleKey = key;
+      }
       frag.appendChild(c.el);
     }
     for (const m of matched.values()) {
@@ -945,6 +954,13 @@ if (window.__greenoil_injected__) {
 
   function formatCount(n) {
     return n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  }
+
+  function visibleCluster(c) {
+    const mis = showMatched ? c.mis : 0;
+    const fried = showMatched ? c.fried : 0;
+    const checked = showChecked ? c.checked : 0;
+    return { ...c, mis, fried, checked, count: mis + fried + checked };
   }
 
   /**
