@@ -131,8 +131,10 @@ class PopupController {
     // Nav Modal
     this.elNavModal = document.getElementById("navModal");
     this.elBtnCloseNavModal = document.getElementById("btnCloseNavModal");
-    this.elNavLegsList = document.getElementById("navLegsList");
+    this.elBtnOpenFullRoute = document.getElementById("btnOpenFullRoute");
     this.elBtnOpenAllLegs = document.getElementById("btnOpenAllLegs");
+    this.elNavLegsList = document.getElementById("navLegsList");
+    this.elBtnCancelNavModal = document.getElementById("btnCancelNavModal");
 
     // Auth Modal
     this.elAuthModal = document.getElementById("authModal");
@@ -276,7 +278,12 @@ class PopupController {
     this.elBtnSyncCloud.addEventListener("click", () => this.handleCloudSync());
     this.elBtnOpenAuth.addEventListener("click", () => this.openAuthModal());
     this.elBtnCloseAuthModal.addEventListener("click", () => this.closeAuthModal());
-    this.elBtnCloseNavModal.addEventListener("click", () => this.closeNavModal());
+    if (this.elBtnCloseNavModal) {
+      this.elBtnCloseNavModal.addEventListener("click", () => this.closeNavModal());
+    }
+    if (this.elBtnCancelNavModal) {
+      this.elBtnCancelNavModal.addEventListener("click", () => this.closeNavModal());
+    }
 
     this.elBtnLogin.addEventListener("click", () => this.handleLogin());
     this.elBtnLogout.addEventListener("click", () => this.handleLogout());
@@ -630,11 +637,17 @@ class PopupController {
       this.elBtnLockSelected.style.display = "inline-flex";
       this.elBtnUnlockSelected.style.display = "inline-flex";
       this.elBtnBatchDelete.style.display = "inline-flex";
+      if (this.elBtnGenerateNav) {
+        this.elBtnGenerateNav.title = `在 Google Maps 打开所选 ${this.selectedWaypointKeys.size} 个途径点的导航路线`;
+      }
     } else {
       this.elBatchCountLabel.textContent = `全选 (${totalCount} 站)`;
       this.elBtnLockSelected.style.display = "none";
       this.elBtnUnlockSelected.style.display = "none";
       this.elBtnBatchDelete.style.display = "none";
+      if (this.elBtnGenerateNav) {
+        this.elBtnGenerateNav.title = "在 Google Maps 打开多点导航路线";
+      }
     }
   }
 
@@ -927,20 +940,78 @@ class PopupController {
   }
 
   /**
-   * Build Google Maps directions URL with origin and stops
+   * Build Google Maps directions URL with origin and stops.
+   * Concatenates all waypoints with slashes, bypassing the Google Maps UI 10-stop limit.
    */
   buildSlashUrl(origin, stops) {
-    const originStr = encodeURIComponent(origin);
-    const stopStrs = stops.map(s => {
-      const q = (s.name ? s.name + ", " : "") + (s.address || "");
-      return encodeURIComponent(q);
+    if (window.GreenOilRoute && window.GreenOilRoute.buildSlashUrl) {
+      return window.GreenOilRoute.buildSlashUrl(origin, stops);
+    }
+    const originStr = encodeURIComponent(origin || "");
+    const stopStrs = (stops || []).map(s => {
+      const isCustom = !!s.isCustomAddress || s.name === s.address;
+      let target = isCustom ? (s.address || s.name || "") : ((s.name ? s.name + ", " : "") + (s.address || ""));
+      if (!target.trim() && s.latitude && s.longitude) {
+        target = `${s.latitude},${s.longitude}`;
+      }
+      return encodeURIComponent(target);
     });
     return `https://www.google.com/maps/dir/${originStr}/${stopStrs.join("/")}/`;
   }
 
+  /**
+   * Split waypoints into legs of up to 9 stops each (for mobile Google Maps app support).
+   */
+  buildRouteLegs(origin, stops, step = 9) {
+    if (window.GreenOilRoute && window.GreenOilRoute.buildRouteLegs) {
+      return window.GreenOilRoute.buildRouteLegs(origin, stops, step);
+    }
+    const legs = [];
+    const safeStops = stops || [];
+    const totalLegs = Math.ceil(safeStops.length / step);
+
+    for (let i = 0; i < totalLegs; i++) {
+      const startIdx = i * step;
+      const endIdx = Math.min(startIdx + step, safeStops.length);
+      const legStops = safeStops.slice(startIdx, endIdx);
+
+      const prevStop = safeStops[startIdx - 1];
+      const legOrigin = i === 0
+        ? origin
+        : ((prevStop && prevStop.name ? prevStop.name + ", " : "") + ((prevStop && prevStop.address) || ""));
+
+      const legUrl = this.buildSlashUrl(legOrigin, legStops);
+
+      const fromLabel = i === 0 ? "Green Oil HQ" : ((prevStop && prevStop.name) || `第 ${startIdx} 站`);
+      const toLabel = (legStops[legStops.length - 1] && legStops[legStops.length - 1].name) || `第 ${endIdx} 站`;
+
+      legs.push({
+        index: i + 1,
+        from: fromLabel,
+        to: toLabel,
+        count: legStops.length,
+        stopNames: legStops.map(s => s.name || s.address).join(" → "),
+        url: legUrl
+      });
+    }
+
+    return legs;
+  }
+
+  openUrl(url) {
+    if (chrome?.tabs?.create) {
+      chrome.tabs.create({ url });
+    } else {
+      window.open(url, "_blank");
+    }
+  }
+
   handleGenerateNav() {
     const activeRoute = this.getActiveRoute();
-    const waypoints = activeRoute.waypoints || [];
+    const allWaypoints = activeRoute.waypoints || [];
+    const waypoints = this.selectedWaypointKeys && this.selectedWaypointKeys.size > 0
+      ? allWaypoints.filter(w => this.selectedWaypointKeys.has(this.getWaypointKey(w)))
+      : allWaypoints;
     const origin = activeRoute.origin || DEFAULT_ORIGIN;
 
     if (waypoints.length === 0) {
@@ -948,59 +1019,46 @@ class PopupController {
       return;
     }
 
+    // 全量拼接 URL（包含全部站点，无 10 条限制）
+    const fullSlashUrl = this.buildSlashUrl(origin, waypoints);
+
     const STEP = 9;
     if (waypoints.length <= STEP) {
-      const url = this.buildSlashUrl(origin, waypoints);
-      window.open(url, "_blank");
+      this.openUrl(fullSlashUrl);
       return;
     }
 
-    const totalLegs = Math.ceil(waypoints.length / STEP);
-    const legs = [];
-
-    for (let i = 0; i < totalLegs; i++) {
-      const startIdx = i * STEP;
-      const endIdx = Math.min(startIdx + STEP, waypoints.length);
-      const legStops = waypoints.slice(startIdx, endIdx);
-
-      const legOrigin = i === 0 ? origin : ((waypoints[startIdx - 1].name ? waypoints[startIdx - 1].name + ", " : "") + (waypoints[startIdx - 1].address || ""));
-      const legUrl = this.buildSlashUrl(legOrigin, legStops);
-
-      const fromLabel = i === 0 ? "Green Oil HQ" : (waypoints[startIdx - 1].name || `第 ${startIdx} 站`);
-      const toLabel = legStops[legStops.length - 1].name || `第 ${endIdx} 站`;
-
-      legs.push({
-        index: i + 1,
-        from: fromLabel,
-        to: toLabel,
-        count: legStops.length,
-        url: legUrl
-      });
-    }
-
-    this.renderNavModal(legs);
+    const legs = this.buildRouteLegs(origin, waypoints);
+    this.renderNavModal(legs, fullSlashUrl);
   }
 
-  renderNavModal(legs) {
+  renderNavModal(legs, fullSlashUrl) {
+    if (this.elBtnOpenFullRoute) {
+      this.elBtnOpenFullRoute.onclick = () => {
+        this.openUrl(fullSlashUrl);
+      };
+    }
+
     this.elNavLegsList.innerHTML = "";
     legs.forEach(leg => {
       const item = document.createElement("div");
       item.className = "nav-leg-item";
       item.innerHTML = `
         <div class="leg-info">
-          <div class="leg-title">第 ${leg.index} 段（${leg.count} 个经停点）</div>
+          <div class="leg-title">第 ${leg.index} 段 (${leg.count} 站)</div>
           <div class="leg-subtitle">${this.escapeHtml(leg.from)} &rarr; ${this.escapeHtml(leg.to)}</div>
+          <div class="leg-stops" title="${this.escapeHtml(leg.stopNames)}">${this.escapeHtml(leg.stopNames)}</div>
         </div>
-        <button class="btn btn-secondary">导航本段</button>
+        <button class="btn btn-secondary btn-sm nav-btn-leg">导航本段</button>
       `;
       item.querySelector("button").addEventListener("click", () => {
-        window.open(leg.url, "_blank");
+        this.openUrl(leg.url);
       });
       this.elNavLegsList.appendChild(item);
     });
 
     this.elBtnOpenAllLegs.onclick = () => {
-      legs.forEach(leg => window.open(leg.url, "_blank"));
+      legs.forEach(leg => this.openUrl(leg.url));
     };
 
     this.elNavModal.style.display = "flex";

@@ -424,6 +424,8 @@ html, body {
   display: flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .batch-select-label {
@@ -433,6 +435,11 @@ html, body {
   cursor: pointer;
   font-weight: 600;
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.batch-label {
+  white-space: nowrap;
 }
 
 .custom-checkbox {
@@ -440,12 +447,14 @@ html, body {
   height: 15px;
   cursor: pointer;
   accent-color: var(--theme-color);
+  flex-shrink: 0;
 }
 
 .batch-right {
   display: flex;
   align-items: center;
   gap: 5px;
+  flex-shrink: 0;
 }
 
 .btn-batch-action {
@@ -462,6 +471,8 @@ html, body {
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn-batch-action:hover {
@@ -997,6 +1008,13 @@ html, body {
   color: var(--text-secondary);
 }
 
+.btn-sm {
+  font-size: 11px;
+  padding: 4px 8px;
+  height: 26px;
+  flex: none;
+}
+
 .modal-btn-row {
   display: flex;
   gap: 8px;
@@ -1006,36 +1024,86 @@ html, body {
   flex: 1;
 }
 
-/* Navigation Legs */
+/* Navigation Legs Modal */
+.nav-modal-btn-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.nav-modal-btn-row .btn {
+  flex: 1;
+  font-size: 11px;
+  padding: 8px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.nav-segments-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
 .nav-legs-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .nav-leg-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background-color: #ffffff;
+  gap: 8px;
 }
 
 .leg-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
 
 .leg-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .leg-subtitle {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.leg-stops {
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 210px;
+}
+
+.nav-btn-leg {
+  white-space: nowrap;
 }

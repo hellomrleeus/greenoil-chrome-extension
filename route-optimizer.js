@@ -230,7 +230,60 @@ function routeLengthKm(waypoints, origin) {
   return total;
 }
 
-const api = { optimizeRoute, routeLengthKm, haversineKm };
+/**
+ * Build Google Maps directions URL with origin and stops.
+ * Concatenates all waypoints with slashes, bypassing the Google Maps UI 10-stop limit.
+ */
+function buildSlashUrl(origin, stops) {
+  const originStr = encodeURIComponent(origin || "");
+  const stopStrs = (stops || []).map(s => {
+    const isCustom = !!s.isCustomAddress || s.name === s.address;
+    let target = isCustom ? (s.address || s.name || "") : ((s.name ? s.name + ", " : "") + (s.address || ""));
+    if (!target.trim() && s.latitude && s.longitude) {
+      target = `${s.latitude},${s.longitude}`;
+    }
+    return encodeURIComponent(target);
+  });
+  return `https://www.google.com/maps/dir/${originStr}/${stopStrs.join("/")}/`;
+}
+
+/**
+ * Split waypoints into legs of up to 9 stops each (for mobile Google Maps app support).
+ */
+function buildRouteLegs(origin, stops, step = 9) {
+  const legs = [];
+  const safeStops = stops || [];
+  const totalLegs = Math.ceil(safeStops.length / step);
+
+  for (let i = 0; i < totalLegs; i++) {
+    const startIdx = i * step;
+    const endIdx = Math.min(startIdx + step, safeStops.length);
+    const legStops = safeStops.slice(startIdx, endIdx);
+
+    const prevStop = safeStops[startIdx - 1];
+    const legOrigin = i === 0
+      ? origin
+      : ((prevStop && prevStop.name ? prevStop.name + ", " : "") + ((prevStop && prevStop.address) || ""));
+
+    const legUrl = buildSlashUrl(legOrigin, legStops);
+
+    const fromLabel = i === 0 ? "Green Oil HQ" : ((prevStop && prevStop.name) || `第 ${startIdx} 站`);
+    const toLabel = (legStops[legStops.length - 1] && legStops[legStops.length - 1].name) || `第 ${endIdx} 站`;
+
+    legs.push({
+      index: i + 1,
+      from: fromLabel,
+      to: toLabel,
+      count: legStops.length,
+      stopNames: legStops.map(s => s.name || s.address).join(" → "),
+      url: legUrl
+    });
+  }
+
+  return legs;
+}
+
+const api = { optimizeRoute, routeLengthKm, haversineKm, buildSlashUrl, buildRouteLegs };
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = api;
