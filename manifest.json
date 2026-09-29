@@ -27,8 +27,7 @@
     "storage",
     "activeTab",
     "scripting",
-    "tabs",
-    "cookies"
+    "tabs"
   ],
   "content_scripts": [
     {
@@ -66,8 +65,6 @@
     "https://*.google.com.tw/maps*",
     "https://*.google.co.jp/maps*",
     "https://greenoil-api.ydxhjw4j5w.workers.dev/*",
-    "https://api.typesafe.ai/*",
-    "*://*.greenoilinc.com/*",
-    "*://greenoilinc.com/*"
+    "https://api.typesafe.ai/*"
   ]
 }

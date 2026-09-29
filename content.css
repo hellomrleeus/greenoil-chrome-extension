@@ -209,45 +209,8 @@
 }
 
 /* ===================================================
-   MIS Match Button & Disabled / Loading States
+   Action Button Loading State
    =================================================== */
-
-.greenoil-mis-circle {
-  background-color: #4f46e5 !important;
-  color: #ffffff !important;
-}
-
-#greenoil-match-mis-btn .greenoil-action-btn:hover .greenoil-mis-circle {
-  background-color: #4338ca !important;
-}
-
-.greenoil-mis-label {
-  color: #4338ca !important;
-}
-
-.greenoil-mis-disabled .greenoil-action-circle {
-  background-color: #9ca3af !important;
-  color: #f3f4f6 !important;
-  opacity: 0.55 !important;
-  box-shadow: none !important;
-  cursor: not-allowed !important;
-  filter: grayscale(0.8) !important;
-}
-
-.greenoil-mis-disabled .greenoil-action-label {
-  color: #9ca3af !important;
-  cursor: not-allowed !important;
-}
-
-.greenoil-mis-disabled:hover .greenoil-action-btn {
-  transform: none !important;
-}
-
-.greenoil-mis-disabled:hover .greenoil-action-circle {
-  background-color: #9ca3af !important;
-  box-shadow: none !important;
-  transform: none !important;
-}
 
 .greenoil-action-container.greenoil-loading .greenoil-action-circle svg {
   animation: greenoil-spin 1s linear infinite !important;
@@ -258,7 +221,7 @@
   to { transform: rotate(360deg); }
 }
 
-/* MIS Contracted Customer Floating Indicator */
+/* Explore results floating bar */
 #greenoil-pins-control-bar {
   position: fixed;
   bottom: 24px;
@@ -289,12 +252,6 @@
   transition: all 0.15s ease;
 }
 
-.greenoil-control-pill.mis-pill {
-  background: #eef2ff;
-  color: #3730a3;
-  border-color: #c7d2fe;
-}
-
 .greenoil-control-pill.explore-pill {
   background: #f3f4f6;
   color: #374151;
@@ -323,277 +280,7 @@
 }
 
 /* ===================================================
-   MIS Customer Details Floating Modal (Screenshot Aligned)
-   =================================================== */
-
-#greenoil-mis-modal {
-  position: fixed;
-  inset: 0;
-  background-color: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(2px);
-  z-index: 99999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  animation: greenoil-modal-fade 0.2s ease-out forwards;
-}
-
-@keyframes greenoil-modal-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-.greenoil-mis-card {
-  background: #ffffff;
-  border-radius: 10px;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.15);
-  width: 100%;
-  max-width: 890px;
-  overflow: hidden;
-  border: 1px solid #d1d5db;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  animation: greenoil-card-scale 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes greenoil-card-scale {
-  from {
-    transform: scale(0.95) translateY(8px);
-  }
-  to {
-    transform: scale(1) translateY(0);
-  }
-}
-
-/* Card Header */
-.greenoil-mis-header {
-  padding: 14px 18px;
-  background: #ffffff;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.greenoil-mis-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.greenoil-mis-name-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.greenoil-mis-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: #111827;
-}
-
-.greenoil-mis-code-badge {
-  font-size: 11px;
-  font-weight: 600;
-  background: #eff6ff;
-  color: #1d4ed8;
-  padding: 2px 7px;
-  border-radius: 4px;
-  border: 1px solid #bfdbfe;
-}
-
-.greenoil-mis-sts-badge {
-  font-size: 11px;
-  font-weight: 600;
-  background: #ecfdf5;
-  color: #047857;
-  padding: 2px 7px;
-  border-radius: 4px;
-  border: 1px solid #a7f3d0;
-}
-
-.greenoil-mis-close-btn {
-  background: none;
-  border: none;
-  color: #9ca3af;
-  cursor: pointer;
-  padding: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  transition: all 0.15s ease;
-}
-
-.greenoil-mis-close-btn:hover {
-  background: #f3f4f6;
-  color: #111827;
-}
-
-.greenoil-mis-close-btn svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
-}
-
-.greenoil-mis-addr-text {
-  font-size: 12px;
-  color: #6b7280;
-  margin-top: 4px;
-}
-
-/* Table Section Matching Screenshot */
-.greenoil-mis-table-wrapper {
-  overflow-x: auto;
-  background: #ffffff;
-}
-
-.greenoil-mis-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-}
-
-.greenoil-mis-table thead tr {
-  background-color: #278a53 !important; /* Screenshot exact green */
-  color: #ffffff !important;
-}
-
-.greenoil-mis-table thead th {
-  padding: 10px 14px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #ffffff;
-  white-space: nowrap;
-  letter-spacing: 0.1px;
-  user-select: none;
-}
-
-.greenoil-mis-table thead th span.th-icon {
-  display: inline-block;
-  margin-left: 3px;
-  vertical-align: middle;
-}
-
-.greenoil-mis-table tbody tr {
-  border-bottom: 1px solid #e5e7eb;
-  transition: background-color 0.12s ease;
-}
-
-.greenoil-mis-table tbody tr:hover {
-  background-color: #f9fafb;
-}
-
-.greenoil-mis-table tbody td {
-  padding: 12px 14px;
-  font-size: 13px;
-  color: #111827;
-  white-space: nowrap;
-  vertical-align: middle;
-}
-
-/* Container Chips Matching Screenshot */
-.chip-container-oil {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: #fef3c7;
-  color: #78350f;
-  padding: 2px 7px;
-  border-radius: 6px;
-  font-weight: 700;
-  font-size: 11px;
-  margin-right: 4px;
-}
-
-.chip-container-drum {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: #f3f4f6;
-  color: #374151;
-  padding: 2px 7px;
-  border-radius: 6px;
-  font-weight: 700;
-  font-size: 11px;
-}
-
-.chip-container-oil svg,
-.chip-container-drum svg {
-  width: 12px;
-  height: 12px;
-  fill: currentColor;
-}
-
-/* Card Action Footer */
-.greenoil-mis-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 18px;
-  background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
-}
-
-.greenoil-mis-btn-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  background-color: #059669;
-  color: #ffffff;
-  border: none;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-  transition: all 0.15s ease;
-}
-
-.greenoil-mis-btn-add:hover {
-  background-color: #047857;
-  transform: translateY(-1px);
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.18);
-}
-
-.greenoil-mis-btn-add svg {
-  width: 15px;
-  height: 15px;
-  fill: currentColor;
-}
-
-.greenoil-mis-btn-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 8px 14px;
-  background: #ffffff;
-  color: #374151;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  text-decoration: none;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.greenoil-mis-btn-link:hover {
-  background: #f3f4f6;
-  color: #111827;
-  border-color: #9ca3af;
-}
-
-.greenoil-mis-btn-link svg {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-}
-
-/* ===================================================
-   Waypoint / MIS pins on the map
+   Waypoint pins on the map
    The overlay is mounted INSIDE Google's map container, right after the
    map canvas (see content.js ensurePinLayer), so Google's side panel,
    search box and controls stack above it and the container's
@@ -673,7 +360,7 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
   user-select: none !important;
 }
 
-/* 探索 glyph (fork & knife / flame / shield), white, centered on the disc. */
+/* 探索 glyph (fork & knife / flame ), white, centered on the disc. */
 .greenoil-pin-shield {
   position: absolute !important;
   left: 8px !important;
@@ -686,7 +373,7 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 }
 
 /* ---------------------------------------------------
-   探索 pins: grey -> yellow (fried) -> indigo shield (MIS)
+   探索 pins: grey -> yellow (fried)
    --------------------------------------------------- */
 
 .greenoil-pin-group {
@@ -705,7 +392,6 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 
 /* Both cached and live results follow the popup layer switches.
    data-state updates as results arrive, so newly painted pins stay filtered. */
-.greenoil-pin-group.greenoil-matched-off .greenoil-explore-pin[data-state="mis"],
 .greenoil-pin-group.greenoil-matched-off .greenoil-explore-pin[data-state="fried"],
 .greenoil-pin-group.greenoil-checked-off .greenoil-explore-pin[data-state="candidate"] {
   display: none !important;
@@ -720,7 +406,7 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 }
 
 /* Zoomed-out map: one bubble per grid cell instead of every pin. The
-   conic ring (inline background) shows the MIS / 油炸 / 已检查 shares; the
+   conic ring (inline background) shows the 油炸 / 已检查 shares; the
    glow takes the highest colour present, like a heat spot. Centered on
    the anchor, unlike pins (tip on the anchor). */
 .greenoil-cluster-body {
@@ -733,7 +419,6 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
   border-radius: 50% !important;
   pointer-events: none !important;
 }
-.greenoil-cluster-body[data-top="mis"] { box-shadow: 0 0 14px 5px rgba(79, 70, 229, 0.45); }
 .greenoil-cluster-body[data-top="fried"] { box-shadow: 0 0 14px 5px rgba(245, 158, 11, 0.45); }
 .greenoil-cluster-body[data-top="candidate"] { box-shadow: 0 0 12px 4px rgba(107, 114, 128, 0.35); }
 .greenoil-cluster-body > span {
@@ -750,7 +435,6 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 
 .greenoil-explore-pin { z-index: 1; }
 .greenoil-explore-pin[data-state="fried"] { z-index: 2; }
-.greenoil-explore-pin[data-state="mis"] { z-index: 3; }
 
 /* A place on the route shows only its waypoint pin. */
 .greenoil-explore-pin.greenoil-explore-shadowed {
@@ -779,7 +463,6 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
   animation: greenoil-label-in 0.3s ease both;
 }
 .greenoil-explore-pin[data-state="fried"] .greenoil-explore-label { color: #b45309 !important; }
-.greenoil-explore-pin[data-state="mis"] .greenoil-explore-label { color: #4338ca !important; }
 /* Resident pins can number in the hundreds: icon only. */
 .greenoil-matched-pin .greenoil-explore-label { display: none !important; }
 
@@ -790,10 +473,6 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 
 .greenoil-explore-fill {
   transition: fill 0.35s ease;
-}
-
-.greenoil-explore-pin[data-state="mis"] .greenoil-pin-body {
-  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 3px rgba(79, 70, 229, 0.55)) !important;
 }
 
 /* Rises out of the map: grows from its tip with a small overshoot. */
@@ -828,10 +507,10 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 }
 
 /* ===================================================
-   MIS Pin Badge beside Place Heading
+   Fried Tag beside Place Heading
    =================================================== */
 
-/* Name tag on a place page: one tag, MIS签约 > 油炸 (same colours as the pins) */
+/* Name tag on a place page: one tag, 油炸 (same colours as the pins) */
 .greenoil-heading-tag {
   display: inline-flex !important;
   align-items: center !important;
@@ -860,18 +539,6 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
   height: 12px !important;
   flex-shrink: 0 !important;
   fill: currentColor !important;
-}
-
-.greenoil-heading-tag.is-mis {
-  background: #4f46e5 !important;
-  color: #ffffff !important;
-  cursor: pointer !important;
-  box-shadow: 0 1px 3px rgba(79, 70, 229, 0.35) !important;
-  transition: background 0.15s ease !important;
-}
-
-.greenoil-heading-tag.is-mis:hover {
-  background: #4338ca !important;
 }
 
 .greenoil-heading-tag.is-fried {

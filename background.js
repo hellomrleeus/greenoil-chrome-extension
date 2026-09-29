@@ -1,7 +1,7 @@
 /**
  * Green Oil Chrome Extension - Background Service Worker (ES module)
  * Manages 5-color route palette persistence, dynamic badge color, Google Maps
- * theme synchronization, and the 探索 MIS / jev pipeline.
+ * theme synchronization, and the 探索 jev pipeline.
  * Worker API calls shared with the popup go through api.js (GreenOilApi).
  */
 
@@ -360,44 +360,20 @@ async function handlePanToWaypoint(wp) {
 }
 
 // ==========================================
-// MIS System Integration & Silent Nearby Match
+// 探索: result caches & fried-food judgement
 // ==========================================
 
-let _cachedMisAuth = { loggedIn: false, checkedAt: 0 };
-let _lastMisRequestTime = 0;
-
-/**
- * Throttle all requests to MIS system to strictly 1 request per second (1000ms delay)
- * Protects the company MIS internal server from sudden traffic bursts.
- */
-async function rateLimitMisRequest() {
-  const now = Date.now();
-  const elapsed = now - _lastMisRequestTime;
-  if (elapsed < 1000) {
-    const waitMs = 1000 - elapsed;
-    await new Promise(resolve => setTimeout(resolve, waitMs));
-  }
-  _lastMisRequestTime = Date.now();
-}
-
 // ---- Local result caches (chrome.storage.local) ----
-// Positive results ("matched" places): an MIS customer matched to a
-// Google place, and places jev judged to serve fried food. Negative
-// results live in the checked-place cache below.
-// Every result is reused for CACHE_FRESH_MS of its kind — MIS 1 day (new
-// customers are signed often), jev fried verdict 7 days (menus change
-// slowly): within it a click skips the place / answers from the cache.
-// After that the place is queried again on the next click, but its pin
-// (and name tag) keeps showing the last known result until CACHE_KEEP_MS.
-// MIS customer records are company data: only read while the MIS login is
-// valid, wiped as soon as a logout is detected (see checkMisAuth).
+// Positive results ("matched" places): places jev judged to serve fried
+// food. Negative results live in the checked-place cache below.
+// A fried verdict is reused for CACHE_FRESH_MS (7 days; menus change
+// slowly): within it a click answers from the cache. After that the place
+// is queried again on the next click, but its pin (and name tag) keeps
+// showing the last known result until CACHE_KEEP_MS.
 const DAY_MS = 24 * 60 * 60 * 1000;
-const CACHE_FRESH_MS = { m: DAY_MS, f: 7 * DAY_MS };     // reused without a new query
+const CACHE_FRESH_MS = { f: 7 * DAY_MS };     // reused without a new query
 const CACHE_KEEP_MS = 30 * DAY_MS;                        // still drawn on the map
-const MIS_CACHE_KEY = "gce_mis_match_cache";              // {placeId: {t, customer}}
-const LEGACY_MIS_CACHE_KEY = "gce_mis_cache";             // old per-keyword cache
 const FRIED_CACHE_KEY = "gce_fried_cache";                // {placeId: {t}}
-const MIS_CACHE_MAX = 3000;
 const FRIED_CACHE_MAX = 5000;
 
 async function readCache(key) {
@@ -425,9 +401,8 @@ function pruneCache(map, max, now) {
   );
 }
 
-async function clearMisCache() {
-  await chrome.storage.local.remove([MIS_CACHE_KEY, LEGACY_MIS_CACHE_KEY]);
-}
+// The MIS matching feature is gone: drop the customer data it cached.
+Promise.resolve(chrome.storage?.local?.remove(["gce_mis_match_cache", "gce_mis_cache"])).catch(() => {});
 
 async function cachePositive(key, placeId, value, max) {
   const now = Date.now();
@@ -444,20 +419,19 @@ async function removeCacheEntry(key, placeId) {
 }
 
 // ---- Checked-place cache (grey pins) ----
-// Places checked with a negative result: jev found no fried food (f), or
-// MIS has no customer for them / JEV rejected every candidate (m). While
-// fresh (CACHE_FRESH_MS[kind]) a click on 探索 / 匹配MIS skips them, so each click
+// Places checked with a negative result: jev found no fried food (f). While
+// fresh (CACHE_FRESH_MS[kind]) a click on 探索 skips them, so each click
 // takes the nearest unchecked places in the window; grey pins stay until
 // CACHE_KEEP_MS. Errors are never recorded (retried next click);
 // Shift+click re-checks everything. Stored per map tile (~7 km, zoom 12):
 // a lookup or write touches only the tiles around the map window, never
 // one ever-growing blob. The index lists the tiles and caps the total.
 const SEEN_TILE_ZOOM = 12;
-const SEEN_KEY_PREFIX = "gce_seen:";                      // gce_seen:<x>:<y> -> {placeId: {n, a, o, f?, m?}}
+const SEEN_KEY_PREFIX = "gce_seen:";                      // gce_seen:<x>:<y> -> {placeId: {n, a, o, f?}}
 const SEEN_INDEX_KEY = "gce_seen_tiles";                  // {tileKey: {t, c}}
 const SEEN_TILE_MAX = 2000;
 const SEEN_TOTAL_MAX = 40000;
-const SEEN_KIND = { fried: "f", mis: "m" };
+const SEEN_KIND = { fried: "f" };
 let _seenChain = Promise.resolve();
 
 /** Web Mercator world coordinates in [0, 1] (Google's map projection). */
@@ -513,12 +487,10 @@ function pruneSeenTile(tile, now) {
   const kept = [];
   for (const [id, e] of Object.entries(tile)) {
     const f = keptSeen(e, "f", now) ? e.f : 0;
-    const m = keptSeen(e, "m", now) ? e.m : 0;
-    if (!f && !m) continue;
+    if (!f) continue;
     const out = { n: e.n, a: e.a, o: e.o };
     if (f) out.f = f;
-    if (m) out.m = m;
-    kept.push([id, out, Math.max(f, m)]);
+    kept.push([id, out, f]);
   }
   kept.sort((x, y) => y[2] - x[2]);
   return Object.fromEntries(kept.slice(0, SEEN_TILE_MAX).map(([id, e]) => [id, e]));
@@ -575,14 +547,14 @@ async function readChecked(bounds, now) {
   const out = [];
   for (const key of keys) {
     for (const [id, e] of Object.entries(data[key] || {})) {
-      if ((keptSeen(e, "f", now) || keptSeen(e, "m", now)) && inBounds(bounds, e.a, e.o)) out.push([id, e]);
+      if (keptSeen(e, "f", now) && inBounds(bounds, e.a, e.o)) out.push([id, e]);
     }
   }
   return out;
 }
 
 /**
- * Place ids inside the bounds that `kind` (fried | mis) already has a
+ * Place ids inside the bounds that `kind` (fried) already has a
  * result for, positive or negative: the next click skips them.
  */
 async function handleGetCheckedPlaceIds(message) {
@@ -594,72 +566,13 @@ async function handleGetCheckedPlaceIds(message) {
   for (const [id, e] of await readChecked(bounds, now)) {
     if (freshSeen(e, kind, now)) ids.add(id);
   }
-  if (kind === "f") {
-    for (const [id, e] of Object.entries(await readCache(FRIED_CACHE_KEY))) {
-      if (freshEntry(e, "f", now) && inBounds(bounds, e.latitude, e.longitude)) ids.add(id);
-    }
-  } else if ((await checkMisAuth(true)).loggedIn) {
-    for (const [id, e] of Object.entries(await readCache(MIS_CACHE_KEY))) {
-      const c = freshEntry(e, "m", now)?.jevVerified === true ? e.customer : null;
-      if (c && inBounds(bounds, c.latitude, c.longitude)) ids.add(id);
-    }
+  for (const [id, e] of Object.entries(await readCache(FRIED_CACHE_KEY))) {
+    if (freshEntry(e, "f", now) && inBounds(bounds, e.latitude, e.longitude)) ids.add(id);
   }
   return { success: true, ids: [...ids] };
 }
 
-/**
- * Check if the user is authenticated in the MIS system
- */
-async function checkMisAuth(force = false) {
-  const now = Date.now();
-  if (!force && (now - _cachedMisAuth.checkedAt < 5000)) {
-    return _cachedMisAuth;
-  }
-
-  try {
-    const cookies = await chrome.cookies.getAll({ domain: "mis.greenoilinc.com" }).catch(() => []);
-    const logcheckCookie = cookies.find(c => c.name === "LOGCHECK");
-    const phpsessidCookie = cookies.find(c => c.name === "PHPSESSID");
-
-    const isAuthed = Boolean(logcheckCookie && logcheckCookie.value === "1");
-
-    _cachedMisAuth = {
-      loggedIn: isAuthed,
-      checkedAt: now,
-      logcheck: logcheckCookie?.value || "",
-      hasPhpsessid: Boolean(phpsessidCookie?.value)
-    };
-    // Logged out (incl. session cookies gone after a browser restart):
-    // cached customer data must not outlive the MIS session.
-    if (!isAuthed) await clearMisCache().catch(() => {});
-    return _cachedMisAuth;
-  } catch (err) {
-    console.warn("[GreenOil MIS] checkMisAuth error:", err);
-    _cachedMisAuth = { loggedIn: false, checkedAt: now, error: err.message };
-    return _cachedMisAuth;
-  }
-}
-
-// Real-time cookie listener: Broadcast auth state changes to all Maps tabs
-chrome.cookies.onChanged.addListener((changeInfo) => {
-  const dom = changeInfo.cookie?.domain || "";
-  if (dom.includes("greenoilinc.com")) {
-    _cachedMisAuth = { loggedIn: false, checkedAt: 0 };
-    checkMisAuth(true).then((auth) => {
-      chrome.tabs.query({ url: ["https://*.google.com/maps/*", "https://*.google.ca/maps/*"] }, (tabs) => {
-        tabs.forEach(t => chrome.tabs.sendMessage(t.id, { action: "misAuthChanged", auth }).catch(() => {}));
-      });
-    }).catch(() => {});
-  }
-});
-
-// ---- 探索: per-place MIS matching ----
-// The page (google-places.js) finds every restaurant in the map window and
-// asks, place by place, whether it is an MIS customer. A place with a house
-// number is looked up by "number + street"; otherwise by its English name.
-// The MIS hits are then tied to THIS place: same unit number, or a name
-// match, or the only customer at a single-tenant address.
-
+// ---- 探索: place input ----
 // Place fields arrive from the page: keep only well-formed ones.
 function sanitizeExplorePlace(p) {
   if (!p || typeof p.placeId !== "string" || typeof p.name !== "string") return null;
@@ -681,309 +594,8 @@ function sanitizeExplorePlace(p) {
   };
 }
 
-const STREET_SUFFIX_RE = /^(ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|cres|crescent|ct|crt|court|pl|place|ln|lane|pkwy|parkway|hwy|highway|way|terr|terrace|sq|square|cir|circle|e|w|n|s|east|west|north|south)\.?$/i;
-
-/**
- * "3601 Victoria Park Ave" -> "3601 Victoria Park": MIS may write the same
- * street as "Ave", "Avenue" or "AVE.", so the keyword stops before the
- * street type / direction (the house number is checked on the results).
- */
-function addressKeyword(streetPrefix) {
-  const tokens = String(streetPrefix || "").trim().split(/\s+/);
-  while (tokens.length > 2 && STREET_SUFFIX_RE.test(tokens[tokens.length - 1])) tokens.pop();
-  return tokens.join(" ");
-}
-
-function houseNumberOf(address) {
-  const m = String(address || "").replace(/^(?:unit|ste|suite|#)\s*[\w-]+\s*[-–]\s*/i, "").trim().match(/^(\d+[a-z]?)\b/i);
-  return m ? m[1].toLowerCase() : "";
-}
-
-/** How to look this place up in MIS: {kind, keyword} or null. */
-function misQueryFor(place) {
-  if (place.streetPrefix && /^\d/.test(place.streetPrefix)) {
-    return { kind: "address", keyword: addressKeyword(place.streetPrefix) };
-  }
-  if (place.englishName && place.englishName.trim().length >= 3) {
-    return { kind: "name", keyword: place.englishName.trim() };
-  }
-  return null;
-}
-
-const NAME_MATCH_MAX_HITS = 3;
-
-function normalizeStreetKey(street) {
-  return String(street || "")
-    .toLowerCase()
-    .replace(/[.,]/g, " ")
-    .replace(/\b(street|st|avenue|ave|road|rd|drive|dr|boulevard|blvd|crescent|cres|court|ct|place|pl|lane|ln|parkway|pkwy|highway|hwy|way|terrace|square|sq|east|west|north|south|e|w|n|s)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Narrow a name search's MIS hits to the place's own street. */
-function filterNameHits(records, place) {
-  const streetKey = normalizeStreetKey(place.street);
-  if (streetKey) {
-    return records.filter(r => normalizeStreetKey(r.address).includes(streetKey));
-  }
-  return records.length <= NAME_MATCH_MAX_HITS ? records : [];
-}
-
-const NAME_STOPWORDS = new Set(["the", "and", "of", "restaurant", "restaurants", "inc", "ltd", "limited", "co", "corp", "corporation", "company", "cuisine", "kitchen", "food", "foods"]);
-
-function nameTokens(name) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/[’']/g, "")
-    .split(/[^a-z0-9一-鿿]+/)
-    .filter(t => t.length >= 2 && !NAME_STOPWORDS.has(t));
-}
-
-/** Overlap coefficient of the two names' significant words (0..1). */
-function nameScore(a, b) {
-  const A = new Set(nameTokens(a));
-  const B = new Set(nameTokens(b));
-  if (!A.size || !B.size) return 0;
-  let common = 0;
-  for (const t of A) if (B.has(t)) common++;
-  return common / Math.min(A.size, B.size);
-}
-
-/** "3601 Victoria Park Ave #121" / "Unit 121" / "Suite K" -> "121" / "k" */
-function unitOf(address) {
-  const m = String(address || "").split(",")[0].match(/(?:#|\b(?:unit|uinit|ste|suite)\s*#?)\s*([a-z0-9-]+)/i);
-  return m ? m[1].toLowerCase() : "";
-}
-
-const MIS_CANDIDATE_MAX = 255;
-
-/**
- * All plausible MIS rows for this Google place, deduplicated by customer
- * code and ranked so the strongest local signals appear first. JEV makes
- * the final decision; these rules only keep unrelated addresses out.
- */
-function misCandidatesForPlace(records, place, kind) {
-  const input = Array.isArray(records) ? records : records ? [records] : [];
-  let pool = input.filter(r => r && r.code);
-  if (kind === "name") pool = filterNameHits(pool, place);
-  if (kind === "address") {
-    const number = houseNumberOf(place.streetPrefix || place.displayName);
-    pool = pool.filter(r => houseNumberOf(r.address) === number);
-  }
-
-  const byCode = new Map();
-  for (const record of pool) {
-    const key = String(record.code).trim().toUpperCase();
-    if (!key) continue;
-    const previous = byCode.get(key);
-    if (!previous || (previous.sts !== "A" && record.sts === "A")) byCode.set(key, record);
-  }
-
-  const placeUnit = unitOf(place.displayName);
-  return [...byCode.values()]
-    .map(r => ({
-      r,
-      unit: Boolean(placeUnit) && unitOf(r.address) === placeUnit,
-      name: Math.max(nameScore(r.name, place.englishName), nameScore(r.name, place.name))
-    }))
-    .sort((a, b) => (b.unit - a.unit) || (b.name - a.name) ||
-      ((b.r.sts === "A") - (a.r.sts === "A")))
-    .slice(0, MIS_CANDIDATE_MAX)
-    .map(x => x.r);
-}
-
-/** The MIS customer that is this Google place, or null. */
-function pickMisRecordForPlace(records, place, kind) {
-  const pool = misCandidatesForPlace(records, place, kind);
-  if (!pool.length) return null;
-  const placeUnit = unitOf(place.displayName);
-  const scored = pool.map(r => ({
-    r,
-    unit: Boolean(placeUnit) && unitOf(r.address) === placeUnit,
-    name: Math.max(nameScore(r.name, place.englishName), nameScore(r.name, place.name))
-  }));
-  scored.sort((a, b) => (b.unit - a.unit) || (b.name - a.name) ||
-    ((b.r.sts === "A") - (a.r.sts === "A")));
-  const best = scored[0];
-  if (best.unit || best.name >= 0.5) return best.r;
-  // Single customer at an address without units (standalone building).
-  if (kind === "address" && pool.length === 1 && !placeUnit && !unitOf(best.r.address)) return best.r;
-  return null;
-}
-
-/**
- * Parse MIS Customer List HTML into structured records
- */
-function parseMisCustomerHtml(html) {
-  const customers = [];
-  if (!html) return customers;
-
-  const trMatches = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
-  for (const tr of trMatches) {
-    if (!tr.includes("customer-info-detail")) continue;
-    const tdMatches = tr.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
-    if (tdMatches.length < 10) continue;
-
-    const rawTds = tdMatches.map(td => td.replace(/^<td[^>]*>/i, "").replace(/<\/td>$/i, "").trim());
-    const cleanTds = rawTds.map(td => td.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&#10067;/g, "").replace(/\s+/g, " ").trim());
-
-    // Extract bold customer name
-    const nameMatch = rawTds[1].match(/<b[^>]*class=['"]customer-info-detail['"][^>]*>([\s\S]*?)<\/b>/i);
-    const name = nameMatch ? nameMatch[1].replace(/<[^>]+>/g, "").trim() : cleanTds[1];
-
-    // Extract container chip info
-    let containerRaw = rawTds[7] || "";
-    let containerText = cleanTds[7] || "";
-
-    customers.push({
-      no: cleanTds[0] || "",
-      name: name,
-      code: cleanTds[2] || "",
-      address: cleanTds[3] || "",
-      city: cleanTds[4] || "",
-      payment: cleanTds[5] || "",
-      rate: cleanTds[6] || "",
-      container: containerText,
-      containerRaw: containerRaw,
-      driver: cleanTds[8] || "",
-      phone: cleanTds[9] || "",
-      sts: cleanTds[10] || "A",
-      contract: cleanTds[11] || "",
-      inactive: cleanTds[12] || ""
-    });
-  }
-  return customers;
-}
-
-// An expired session is answered with the login form (HTTP 200), which
-// would otherwise parse as "no customers". A real customer list page can
-// also contain a password field (e.g. a change-password dialog), so only a
-// page WITHOUT the customer list / search form counts as the login page.
-function isMisLoginPage(url, html) {
-  if (/login/i.test(String(url || ""))) return true;
-  const h = String(html || "");
-  const isListPage = /customer-info-detail|customer_list|name=["']?key_word/i.test(h);
-  return !isListPage && /<input[^>]+type=["']?password/i.test(h);
-}
-
-/**
- * Query MIS for a single prefix keyword
- */
-// Returns the parsed records, or null when the query failed (network error,
-// HTTP error, or MIS answered with its login page). null is never cached.
-async function queryMisPrefix(prefix, phpsessid) {
-  if (!prefix || prefix.trim().length < 2) return [];
-  try {
-    const url = `https://mis.greenoilinc.com/index_intranet.php?view=customer_list&switched=&page=1&column=&sorting_type=&switch=&key_word=${encodeURIComponent(prefix.trim())}&cstatus=T&cistop=T`;
-    const resp = await fetch(url, {
-      signal: AbortSignal.timeout(15000),
-      method: "GET",
-      credentials: "include"
-    });
-
-    if (!resp.ok) return null;
-    const html = await resp.text();
-    if (isMisLoginPage(resp.url, html)) return null;
-    return parseMisCustomerHtml(html);
-  } catch (e) {
-    console.warn(`[GreenOil MIS] queryMisPrefix failed for "${prefix}":`, e);
-    return null;
-  }
-}
-
-// ---- 探索 sessions & queues ----
-// MIS: one serial queue, strictly 1 request per second (rateLimitMisRequest).
-// A keyword's MIS answer is memoized in memory for the session (several
-// places can share an address); only matches reach chrome.storage.
-let _misChain = Promise.resolve();
+// ---- 探索 sessions ----
 const _cancelledSessions = new Set();
-const _misKeywordMemo = new Map(); // keyword -> {t, records}
-const MIS_MEMO_TTL_MS = 10 * 60 * 1000;
-
-function enqueueMis(job) {
-  const run = _misChain.then(job);
-  _misChain = run.catch(() => {});
-  return run;
-}
-
-async function misRecordsFor(query, phpsessid) {
-  const key = `${query.kind}:${query.keyword.toLowerCase()}`;
-  const memo = _misKeywordMemo.get(key);
-  if (memo && Date.now() - memo.t < MIS_MEMO_TTL_MS) return memo.records;
-  await rateLimitMisRequest();
-  const records = await queryMisPrefix(query.keyword, phpsessid);
-  if (records) _misKeywordMemo.set(key, { t: Date.now(), records });
-  return records;
-}
-
-/**
- * Find an MIS candidate for this Google place. A fresh MIS candidate is not
- * persisted until JEV confirms that it is still the business currently shown
- * by Google Maps (the address may now have a different restaurant tenant).
- */
-async function handleExploreMatchMis(message) {
-  const place = sanitizeExplorePlace(message.place);
-  if (!place) return { success: false, error: "bad place" };
-  const auth = await checkMisAuth(true);
-  if (!auth.loggedIn) return { success: false, notLoggedIn: true };
-
-  if (!message.forceRefresh) {
-    const hit = freshEntry((await readCache(MIS_CACHE_KEY))[place.placeId], "m", Date.now());
-    if (hit?.jevVerified === true) {
-      return { success: true, customer: hit.customer, cached: true, verified: true,
-        probability: hit.jevProbability ?? null };
-    }
-    // Entries created by an older extension version still need the new JEV
-    // tenant check before they can be trusted or shown again.
-    if (hit?.customer) {
-      return { success: true, candidate: hit.customer, cached: true, needsValidation: true };
-    }
-  }
-  const query = misQueryFor(place);
-  if (!query) {
-    await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
-    await setChecked(place, "m", true);
-    return { success: true, customer: null, diag: { reason: "无地址门牌号也无英文店名" } };
-  }
-
-  return enqueueMis(async () => {
-    if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
-    const phpsessid = (await chrome.cookies.get({ url: "https://mis.greenoilinc.com", name: "PHPSESSID" }))?.value || "";
-    const result = await misRecordsFor(query, phpsessid);
-    const records = Array.isArray(result) ? result : result ? [result] : result;
-    const diag = { kind: query.kind, keyword: query.keyword, records: records ? records.length : null };
-    if (!records) return { success: false, error: "MIS 查询失败", diag: { ...diag, reason: "请求失败或被判定为登录页" } };
-    const candidates = misCandidatesForPlace(records, place, query.kind);
-    if (!candidates.length) {
-      await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
-      await setChecked(place, "m", true);
-      const reason = records.length
-        ? `MIS 有 ${records.length} 条记录但对应不上这家店（${records.slice(0, 3).map(r => `${r.name} / ${r.address}`).join("；")}）`
-        : "MIS 无记录";
-      return { success: true, customer: null, diag: { ...diag, reason } };
-    }
-    const customers = candidates.map(rec => ({
-      ...rec,
-      latitude: place.latitude,
-      longitude: place.longitude,
-      placeId: place.placeId,
-      matchedBy: query.kind,
-      matchedPrefix: query.keyword,
-      matchedCandidateName: place.name
-    }));
-    const reason = customers.length === 1
-      ? `MIS 候选 ${customers[0].name} (${customers[0].code})，等待 JEV 是否校验`
-      : `MIS 返回 ${customers.length} 个候选，等待 JEV 单选校验`;
-    return {
-      success: true,
-      candidate: customers.length === 1 ? customers[0] : undefined,
-      candidates: customers,
-      needsValidation: true,
-      diag: { ...diag, candidates: customers.length, reason }
-    };
-  });
-}
 
 // ---- 探索: fried-food judgement with the jev model ----
 // jev (TypeSafe System One) is a structured-decision model, not a chat
@@ -997,9 +609,6 @@ const JEV_API = {
   model: "jev-latest"
 };
 const FRIED_THRESHOLD = 0.5;
-const MIS_MATCH_THRESHOLD = 0.65;
-const MIS_CHOICE_CONFIDENCE_THRESHOLD = 0.65;
-const MIS_CHOICE_MARGIN = 0.15;
 let _jevKey = null;
 let _jevChain = Promise.resolve();
 
@@ -1054,91 +663,6 @@ function friedRequest(place) {
   };
 }
 
-/** Ask JEV whether the MIS row is the current tenant shown by Google Maps. */
-function misMatchRequest(place, customer) {
-  return {
-    model: JEV_API.model,
-    state: {
-      google_place: {
-        name: place.name,
-        english_name: place.englishName,
-        address: place.displayName,
-        categories: place.categories,
-        description: place.description,
-        owner_description: place.ownerDescription,
-        review_snippets: place.reviews
-      },
-      mis_customer: {
-        name: customer.name,
-        address: customer.address,
-        city: customer.city,
-        status: customer.sts
-      }
-    },
-    questions: {
-      same_business: {
-        type: "noul",
-        instructions:
-          "Is the MIS customer record the same restaurant business that is currently shown in the Google Maps place? " +
-          "A matching street address alone is not sufficient because the restaurant tenant may have changed. " +
-          "Use the business names, unit/address, cuisine/categories, descriptions and recent review snippets. " +
-          "Return false when the MIS record is likely a previous tenant or a different business at the same address.",
-        criteria: {
-          true: "The evidence indicates the MIS customer and current Google Maps restaurant are the same operating business.",
-          false: "The evidence indicates a different/currently replaced restaurant, or is too conflicting to identify them as the same business."
-        }
-      }
-    }
-  };
-}
-
-/** Ask JEV to choose one MIS row, or explicitly choose none of them. */
-function misChoiceRequest(place, customers) {
-  const keyed = customers.map((customer, index) => ({
-    key: `candidate_${index + 1}`,
-    customer
-  }));
-  const criteria = Object.fromEntries(keyed.map(({ key, customer }) => [key,
-    `This is the current Google Maps restaurant: MIS code ${customer.code}, name ${customer.name}, ` +
-    `address ${customer.address}${customer.city ? `, ${customer.city}` : ""}, status ${customer.sts || "unknown"}.`
-  ]));
-  criteria.none_of_above =
-    "None of the MIS records is the restaurant currently shown by Google Maps; they may be previous tenants or different units/businesses.";
-
-  return {
-    body: {
-      model: JEV_API.model,
-      state: {
-        google_place: {
-          name: place.name,
-          english_name: place.englishName,
-          address: place.displayName,
-          categories: place.categories,
-          description: place.description,
-          owner_description: place.ownerDescription,
-          review_snippets: place.reviews
-        },
-        mis_candidates: keyed.map(({ key, customer }) => ({
-          key, code: customer.code, name: customer.name, address: customer.address,
-          city: customer.city, status: customer.sts
-        }))
-      },
-      questions: {
-        same_business: {
-          type: "choice",
-          instructions:
-            "Choose the one MIS customer record that represents the restaurant currently shown by Google Maps. " +
-            "A matching street address alone is not sufficient because restaurant tenants and units may differ or change. " +
-            "Use the business name, unit/address, cuisine/categories, descriptions and recent review snippets. " +
-            "Choose none_of_above when no candidate is clearly the same current business.",
-          criteria
-        }
-      }
-    },
-    keyed
-  };
-}
-
 function answerProbability(data, key) {
   const a = data && data.answers && data.answers[key];
   if (!a) return null;
@@ -1147,20 +671,6 @@ function answerProbability(data, key) {
     if (typeof v === "boolean") return v ? 1 : 0;
   }
   return null;
-}
-
-function choiceAnswer(data, key) {
-  const answer = data && data.answers && data.answers[key];
-  if (!answer || typeof answer.choice !== "string" ||
-    !answer.probabilities || typeof answer.probabilities !== "object") return null;
-  const confidence = Number(answer.confidence);
-  const probabilities = Object.fromEntries(Object.entries(answer.probabilities)
-    .filter(([, value]) => typeof value === "number" && value >= 0 && value <= 1));
-  return {
-    choice: answer.choice,
-    confidence: Number.isFinite(confidence) ? confidence : 0,
-    probabilities
-  };
 }
 
 /** Probability of "yes" from a System One reply, or null. */
@@ -1222,118 +732,21 @@ async function handleExploreClassifyFried(message) {
   return run;
 }
 
-function sanitizeMisCandidate(c) {
-  if (!c || typeof c.code !== "string" || typeof c.name !== "string") return null;
-  const str = (v, max = 200) => (typeof v === "string" ? v.slice(0, max) : "");
-  return {
-    no: str(c.no, 40), name: str(c.name), code: str(c.code, 80),
-    address: str(c.address, 300), city: str(c.city, 120), payment: str(c.payment, 80),
-    rate: str(c.rate, 80), container: str(c.container, 200), containerRaw: str(c.containerRaw, 1000),
-    driver: str(c.driver, 120), phone: str(c.phone, 80), sts: str(c.sts, 20),
-    contract: str(c.contract, 120), inactive: str(c.inactive, 120),
-    matchedBy: str(c.matchedBy, 20), matchedPrefix: str(c.matchedPrefix),
-    matchedCandidateName: str(c.matchedCandidateName), placeId: str(c.placeId, 80),
-    latitude: Number.isFinite(c.latitude) ? c.latitude : null,
-    longitude: Number.isFinite(c.longitude) ? c.longitude : null
-  };
-}
-
-/** JEV tenant check: one candidate uses noul; multiple use a single choice. */
-async function handleExploreValidateMis(message) {
-  const place = sanitizeExplorePlace(message.place);
-  const rawCandidates = Array.isArray(message.customers) ? message.customers :
-    message.customer ? [message.customer] : [];
-  const byCode = new Map();
-  for (const raw of rawCandidates) {
-    const candidate = sanitizeMisCandidate(raw);
-    if (!candidate || candidate.placeId !== place?.placeId) continue;
-    const key = candidate.code.trim().toUpperCase();
-    if (key && !byCode.has(key)) byCode.set(key, candidate);
-  }
-  const customers = [...byCode.values()].slice(0, MIS_CANDIDATE_MAX);
-  if (!place || !customers.length) {
-    return { success: false, error: "bad MIS validation input" };
-  }
-  if (!(await checkMisAuth(true)).loggedIn) return { success: false, notLoggedIn: true };
-
-  const run = _jevChain.then(async () => {
-    if (_cancelledSessions.has(message.sessionId)) return { success: false, cancelled: true };
-    try {
-      let customer = null;
-      let probability = null;
-      let confidence = null;
-      let margin = null;
-      let ambiguous = false;
-      let mode = "noul";
-      let selection = null;
-
-      if (customers.length === 1) {
-        probability = answerProbability(await callJev(misMatchRequest(place, customers[0])), "same_business");
-        if (probability === null) return { success: false, error: "JEV 是否判断返回格式无法识别" };
-        if (probability >= MIS_MATCH_THRESHOLD) customer = customers[0];
-      } else {
-        mode = "choice";
-        const { body, keyed } = misChoiceRequest(place, customers);
-        const answer = choiceAnswer(await callJev(body), "same_business");
-        if (!answer) return { success: false, error: "JEV 单选判断返回格式无法识别" };
-        selection = answer.choice;
-        confidence = answer.confidence;
-        probability = answer.probabilities[answer.choice] ?? 0;
-        const alternatives = Object.entries(answer.probabilities)
-          .filter(([key]) => key !== answer.choice)
-          .map(([, value]) => value)
-          .sort((a, b) => b - a);
-        margin = probability - (alternatives[0] ?? 0);
-        const selected = keyed.find(x => x.key === answer.choice)?.customer || null;
-        const certain = probability >= MIS_MATCH_THRESHOLD &&
-          confidence >= MIS_CHOICE_CONFIDENCE_THRESHOLD && margin >= MIS_CHOICE_MARGIN;
-        if (selected && certain) customer = selected;
-        ambiguous = Boolean(selected) && !certain;
-      }
-
-      const matches = Boolean(customer);
-      if (matches && (await checkMisAuth(true)).loggedIn) {
-        await cachePositive(MIS_CACHE_KEY, place.placeId, {
-          customer, jevVerified: true, jevProbability: probability,
-          jevConfidence: confidence, jevMode: mode
-        }, MIS_CACHE_MAX);
-      } else if (!matches) {
-        await removeCacheEntry(MIS_CACHE_KEY, place.placeId);
-      }
-      await setChecked(place, "m", !matches);
-      return {
-        success: true, matches, probability, confidence, margin, ambiguous, mode, selection,
-        customer: matches ? customer : null
-      };
-    } catch (err) {
-      return { success: false, disabled: Boolean(err.disabled), error: err.message };
-    }
-  });
-  _jevChain = run.catch(() => {});
-  return run;
-}
-
 /**
- * Tags for a place page (name badge): cached MIS match (login-gated) and
- * cached fried verdict. Same data as the 探索 pins, keyed by place id.
+ * Tags for a place page (name badge): cached fried verdict. Same data as the 探索 pins, keyed by place id.
  */
 async function handleGetPlaceTags(message) {
   const placeId = typeof message.placeId === "string" ? message.placeId.slice(0, 80) : "";
   if (!placeId) return { success: false };
   const now = Date.now();
   const fried = keptEntry((await readCache(FRIED_CACHE_KEY))[placeId], now);
-  let customer = null;
-  if ((await checkMisAuth(true)).loggedIn) {
-    const hit = keptEntry((await readCache(MIS_CACHE_KEY))[placeId], now);
-    customer = hit?.jevVerified === true ? hit.customer : null;
-  }
-  return { success: true, customer, fried: Boolean(fried), probability: fried?.probability ?? null };
+  return { success: true, fried: Boolean(fried), probability: fried?.probability ?? null };
 }
 
 /**
  * Grid clustering for a zoomed-out map: places sharing a `cellPx` square
  * of the world at `zoom` become one cluster {latitude, longitude (mean),
- * count, mis, fried, checked}; a place alone in its cell stays a place.
+ * count, fried, checked}; a place alone in its cell stays a place.
  * The grid is fixed to the world, so panning does not reshuffle clusters.
  */
 function clusterPlaces(places, zoom, cellPx) {
@@ -1352,12 +765,11 @@ function clusterPlaces(places, zoom, cellPx) {
       singles.push(list[0]);
       continue;
     }
-    const c = { latitude: 0, longitude: 0, count: list.length, mis: 0, fried: 0, checked: 0 };
+    const c = { latitude: 0, longitude: 0, count: list.length, fried: 0, checked: 0 };
     for (const p of list) {
       c.latitude += p.latitude / list.length;
       c.longitude += p.longitude / list.length;
-      if (p.customer) c.mis++;
-      else if (p.fried) c.fried++;
+      if (p.fried) c.fried++;
       else c.checked++;
     }
     clusters.push(c);
@@ -1366,8 +778,7 @@ function clusterPlaces(places, zoom, cellPx) {
 }
 
 /**
- * Places for the resident map pins: MIS customers (only while logged in to
- * MIS) and fried places from the positive caches, then — with `checked` —
+ * Places for the resident map pins: fried places from the positive cache, then — with `checked` —
  * the grey checked places. With `bounds`, only places inside them (the
  * page loads the area around the map window, not the whole cache).
  * Without `cluster`, at most `checkedMax` grey places, nearest the center:
@@ -1375,7 +786,7 @@ function clusterPlaces(places, zoom, cellPx) {
  * in the bounds, grid-clustered: {places (alone in their cell), clusters}.
  * `exclude`: place ids the page is drawing itself (a running 探索), left out
  * so they are not counted twice.
- * places: [{placeId, name, latitude, longitude, customer|null, fried, checked?}]
+ * places: [{placeId, name, latitude, longitude, fried, checked?}]
  */
 async function handleGetMatchedPlaces(message = {}) {
   const now = Date.now();
@@ -1388,17 +799,7 @@ async function handleGetMatchedPlaces(message = {}) {
   for (const [placeId, e] of Object.entries(await readCache(FRIED_CACHE_KEY))) {
     if (!keptEntry(e, now) || !within(e.latitude, e.longitude)) continue;
     byId.set(placeId, { placeId, name: e.name || "", latitude: e.latitude, longitude: e.longitude,
-      customer: null, fried: true, probability: e.probability ?? null });
-  }
-  if ((await checkMisAuth(true)).loggedIn) {
-    for (const [placeId, e] of Object.entries(await readCache(MIS_CACHE_KEY))) {
-      const kept = keptEntry(e, now);
-      const c = kept?.jevVerified === true ? kept.customer : null;
-      if (!c || !within(c.latitude, c.longitude)) continue;
-      const prev = byId.get(placeId);
-      byId.set(placeId, { placeId, name: c.matchedCandidateName || c.name, latitude: c.latitude, longitude: c.longitude,
-        customer: c, fried: Boolean(prev), probability: prev?.probability ?? null });
-    }
+      fried: true, probability: e.probability ?? null });
   }
   if (message.checked && bounds) {
     const cy = (bounds.south + bounds.north) / 2;
@@ -1412,7 +813,7 @@ async function handleGetMatchedPlaces(message = {}) {
     }
     for (const [placeId, e] of grey) {
       byId.set(placeId, { placeId, name: e.n || "", latitude: e.a, longitude: e.o,
-        customer: null, fried: false, probability: null, checked: true });
+        fried: false, probability: null, checked: true });
     }
   }
   if (Array.isArray(message.exclude)) {
@@ -1676,22 +1077,7 @@ function isPlaceMatch(w, q) {
         return;
       }
 
-      // 9. Check MIS authentication state
-      if (message.action === "checkMisAuth") {
-        const auth = await checkMisAuth(Boolean(message.force));
-        sendResponse(auth);
-        return;
-      }
-
-      // 10. 探索: per-place MIS match / fried-food judgement / cancel
-      if (message.action === "exploreMatchMis") {
-        sendResponse(await handleExploreMatchMis(message));
-        return;
-      }
-      if (message.action === "exploreValidateMis") {
-        sendResponse(await handleExploreValidateMis(message));
-        return;
-      }
+      // 10. 探索: fried-food judgement / cancel
       if (message.action === "exploreClassifyFried") {
         sendResponse(await handleExploreClassifyFried(message));
         return;
@@ -1722,29 +1108,6 @@ function isPlaceMatch(w, q) {
           activeTheme: activeRoute,
           waypoints: activeRoute?.waypoints || []
         });
-        return;
-      }
-
-      // 12. Helper to set or update MIS session cookie (e.g. for user convenience / testing)
-      if (message.action === "setMisSessionCookie") {
-        try {
-          const sid = message.phpsessid || "91d9bd446f1c69d2a9285c50d1b1b927";
-          await chrome.cookies.set({
-            url: "https://mis.greenoilinc.com",
-            name: "PHPSESSID",
-            value: sid
-          });
-          await chrome.cookies.set({
-            url: "https://mis.greenoilinc.com",
-            name: "LOGCHECK",
-            value: "1"
-          });
-          _cachedMisAuth = { loggedIn: false, checkedAt: 0 };
-          const auth = await checkMisAuth(true);
-          sendResponse({ success: true, auth });
-        } catch (err) {
-          sendResponse({ success: false, error: err.message });
-        }
         return;
       }
 

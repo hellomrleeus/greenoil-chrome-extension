@@ -51,7 +51,7 @@ Chinese (Simplified)
 | Store Icon [REQUIRED] | 128×128 PNG | ✅ Ready | `icons/icon-128.png` |
 | Screenshot 1 [REQUIRED] | 1280×800 or 640×400 | ⬜ 待截取 | Google 地图注入途径点与路线概览界面 |
 | Screenshot 2 [RECOMMENDED] | 1280×800 or 640×400 | ⬜ 待截取 | 弹出窗口（Popup）路线管理与 Excel 导出 |
-| Screenshot 3 [RECOMMENDED] | 1280×800 or 640×400 | ⬜ 待截取 | 地图餐厅探索与 MIS 商户匹配图钉展示 |
+| Screenshot 3 [RECOMMENDED] | 1280×800 or 640×400 | ⬜ 待截取 | 地图餐厅探索与油炸商户图钉展示 |
 | Small Promo Tile [RECOMMENDED] | 440×280 PNG/JPEG | ⬜ 待设计 | 应用展示小宣传图 |
 
 ---
@@ -66,11 +66,9 @@ Chinese (Simplified)
 | `activeTab` | permissions | Used to access the currently active Google Maps tab when the user clicks the extension popup to inject route waypoints. |
 | `tabs` | permissions | Used to inspect Google Maps tab URLs and update navigation smoothly between stops without full page reloads. |
 | `scripting` | permissions | Used to inject the visual marker overlay script into the Google Maps canvas. |
-| `cookies` | permissions | Used to read enterprise login session cookies from greenoilinc.com to authenticate MIS customer lookup requests. |
 | `https://*.google.com/maps*` (and regional TLDs) | host_permissions | Required to detect visible map view bounds, read place search responses, and render resident waypoint pins on Google Maps. |
 | `https://greenoil-api.ydxhjw4j5w.workers.dev/*` | host_permissions | Backend API endpoint used to sync saved routes, load configurations, and cloud backups. |
 | `https://api.typesafe.ai/*` | host_permissions | Machine learning API used to classify restaurant menus and identify food establishments with frying oil needs. |
-| `*://*.greenoilinc.com/*` | host_permissions | Enterprise MIS system endpoint to verify matching client accounts for nearby restaurants. |
 
 ---
 
@@ -83,12 +81,11 @@ Chinese (Simplified)
 | Personally identifiable info | No | No | N/A | No |
 | Health info | No | No | N/A | No |
 | Financial info | No | No | N/A | No |
-| Authentication info | Yes (Session Cookies) | Yes (to GreenOil internal server) | Authenticate user against enterprise MIS system | No |
 | Personal communications | No | No | N/A | No |
 | Location | Yes (Map bounds/coords) | Yes (to Google Maps / API) | Calculate routes and display nearby places | No |
 | Web history | No | No | N/A | No |
 | User activity | No | No | N/A | No |
-| Website content | Yes (Maps place names) | Yes (to Classification API & MIS) | Match restaurant names with customer database | No |
+| Website content | Yes (Maps place names) | Yes (to Classification API) | Classify restaurants that serve fried food | No |
 
 ### Certifications
 - [x] Data is NOT sold to third parties

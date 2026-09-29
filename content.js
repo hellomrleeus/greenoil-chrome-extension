@@ -120,14 +120,6 @@ if (window.__greenoil_injected__) {
           if (typeof refreshWaypointPins === "function") refreshWaypointPins();
         }
 
-        if (message.action === "misAuthChanged" && message.auth) {
-          isMisAuthChecked = true;
-          isMisLoggedIn = Boolean(message.auth.loggedIn);
-          const misContainer = document.getElementById("greenoil-match-mis-btn");
-          if (misContainer) setMisButtonAuth(misContainer, isMisLoggedIn);
-          loadMatchedPlaces(); // MIS resident pins follow the MIS login
-        }
-
         if (message.action === "didPanToWaypoint" && message.waypoint) {
           showToast("已定位", message.waypoint.name || "途径点");
           lastProcessedKey = "";
@@ -159,28 +151,12 @@ if (window.__greenoil_injected__) {
 
     // Window focus and visibility listeners for instant login state sync
     listen(window, "focus", () => {
-      const misContainer = document.getElementById("greenoil-match-mis-btn");
-      const misBtn = misContainer?.querySelector("button");
-      if (misContainer && misBtn) {
-        checkAndUpdateMisAuth(misContainer, misBtn, true);
-      }
       refreshWaypointPins();
     });
 
     listen(document, "visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        const misContainer = document.getElementById("greenoil-match-mis-btn");
-        const misBtn = misContainer?.querySelector("button");
-        if (misContainer && misBtn) {
-          checkAndUpdateMisAuth(misContainer, misBtn, true);
-        }
         refreshWaypointPins();
-      }
-    });
-
-    listen(window, "message", (event) => {
-      if (event.data?.type === "GREENOIL_OPEN_MIS_MODAL" && event.data.customer) {
-        openMisModal(event.data.customer);
       }
     });
 
@@ -196,10 +172,8 @@ if (window.__greenoil_injected__) {
   const SVG_CHIP_DRUM = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 3.79 2 6v12c0 2.21 4.48 4 10 4s10-1.79 10-4V6c0-2.21-4.48-4-10-4zm0 2c4.41 0 8 1.34 8 2s-3.59 2-8 2-8-1.34-8-2 3.59-2 8-2z"/></svg>`;
   const SVG_TRASH = `<svg viewBox="0 0 24 24" width="13" height="13"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
 
-  // State for native Google Maps marker coloring & MIS
+  // State for native Google Maps marker coloring
   let currentRouteWaypoints = [];
-  let isMisAuthChecked = false;
-  let isMisLoggedIn = false;
 
   function escapeHtml(str) {
     return String(str || "")
@@ -276,7 +250,7 @@ if (window.__greenoil_injected__) {
       overlay.appendChild(layer);
     }
     // Resident matched pins, then 探索 pins, route waypoints on top
-    // (waypoint > MIS > fried > grey).
+    // (waypoint > fried > grey).
     for (const id of ["greenoil-pins-matched", "greenoil-pins-explore", "greenoil-pins-route"]) {
       if (!document.getElementById(id)) {
         const group = document.createElement("div");
@@ -337,7 +311,7 @@ if (window.__greenoil_injected__) {
   }
 
   // ==========================================
-  // 探索 / 匹配 MIS — restaurants in the map window, 20 at a time
+  // 探索 — restaurants in the map window, 20 at a time
   //
   // Each click snapshots the window and checks the 20 nearest places that
   // this action has no cached result for (positive or negative, see the
@@ -345,22 +319,17 @@ if (window.__greenoil_injected__) {
   // So a further click on the same window simply takes the next 20, and a
   // click after the map moved works on the new window.
   //
-  // Google detail responses are memoized per page (detailMemo), so the
-  // other button later never fetches the same detail again. MIS first
-  // searches for a candidate; only candidates are sent through JEV to
-  // verify that the saved customer is still the current tenant.
+  // Google detail responses are memoized per page (detailMemo), so a
+  // later click never fetches the same detail again.
   // ==========================================
 
   const EXPLORE_BATCH_SIZE = 20;
   const EXPLORE_TITLE = "探索当前地图窗口内最近的 20 家餐馆，只判断是否提供油炸食品。Shift+点击忽略油炸判断缓存";
-  const MATCH_MIS_TITLE = "匹配当前地图窗口内的餐馆与 MIS 客户，并由 JEV 校验是否仍是当前地点。Shift+点击忽略 MIS 缓存";
   const SVG_EXPLORE = `<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-5.5-2.5 7.51-3.49L17.5 6.5 9.99 9.99 6.5 17.5zm5.5-6.6a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2z"/></svg>`;
   const FLAME_PATH = "M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z";
-  const SHIELD_PATH = "M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z";
-  const SVG_MATCH_MIS = `<svg viewBox="0 0 24 24"><path d="${SHIELD_PATH}"/></svg>`;
   const RESTAURANT_PATH = "M11 9H9V2H7v7H5V2H3v7c0 2.12 1.66 3.84 3.75 3.97V22h2.5v-9.03C11.34 12.84 13 11.12 13 9V2h-2v7zm5-3v8h2.5v8H21V2c-2.76 0-5 2.24-5 4z";
-  const EXPLORE_GLYPHS = { candidate: pinGlyph(RESTAURANT_PATH), fried: pinGlyph(FLAME_PATH), mis: pinGlyph(SHIELD_PATH) };
-  const EXPLORE_COLORS = { candidate: "#9ca3af", fried: "#f59e0b", mis: "#4f46e5" };
+  const EXPLORE_GLYPHS = { candidate: pinGlyph(RESTAURANT_PATH), fried: pinGlyph(FLAME_PATH) };
+  const EXPLORE_COLORS = { candidate: "#9ca3af", fried: "#f59e0b" };
   const PLACE_ID_RE = /!1s(0x[0-9a-f]+:0x[0-9a-f]+)/i;
 
   let explore = null;                  // current exploration (one click)
@@ -383,9 +352,8 @@ if (window.__greenoil_injected__) {
     });
   }
 
-  // MIS > fried > grey, from whatever results have arrived so far.
+  // fried > grey, from whatever results have arrived so far.
   function exploreState(entry) {
-    if (entry.customer) return "mis";
     if (entry.fried) return "fried";
     return "candidate";
   }
@@ -459,10 +427,6 @@ if (window.__greenoil_injected__) {
     }
   }
 
-  function exploreMisCustomers() {
-    return explore ? [...explore.places.values()].filter(e => e.customer).map(e => e.customer) : [];
-  }
-
   function clearExplore() {
     if (explore) {
       explore.cancelled = true;
@@ -480,12 +444,11 @@ if (window.__greenoil_injected__) {
   }
 
   function exploreCounts() {
-    const c = { total: 0, fried: 0, mis: 0 };
+    const c = { total: 0, fried: 0 };
     if (!explore) return c;
     for (const e of explore.places.values()) {
       c.total++;
       if (e.fried) c.fried++;
-      if (e.customer) c.mis++;
     }
     return c;
   }
@@ -514,15 +477,10 @@ if (window.__greenoil_injected__) {
       bar.appendChild(el);
     };
     const running = Boolean(explore.runningAction);
-    const runningLabel = explore.runningAction === "mis" ? "匹配MIS中" : "探索中";
-    pill("explore-pill", running && b ? runningLabel : "餐馆",
+    pill("explore-pill", running && b ? "探索中" : "餐馆",
       running && b ? `${b.done}/${b.size}` : c.total,
       explore.lister?.exhausted ? "窗口内餐馆已全部检查" : `本次检查的餐馆（再次点击检查下 ${EXPLORE_BATCH_SIZE} 家未检查的餐馆）`);
     pill("fried-pill", "油炸", c.fried, "jev 判断含油炸食物的餐馆");
-    pill("mis-pill", "MIS签约", c.mis, "点击查看首个匹配客户", () => {
-      const first = exploreMisCustomers()[0];
-      if (first) openMisModal(first);
-    });
 
     const clearBtn = document.createElement("div");
     clearBtn.className = "greenoil-control-clear";
@@ -537,7 +495,6 @@ if (window.__greenoil_injected__) {
   }
 
   const ACTION_FRIED = "fried";
-  const ACTION_MIS = "mis";
 
   function updateActionButton(id, action, idleText, idleIcon) {
     const container = document.getElementById(id);
@@ -553,15 +510,13 @@ if (window.__greenoil_injected__) {
     }
     let text = idleText;
     if (running) {
-      const verb = action === ACTION_MIS ? "匹配中" : "探索中";
-      text = explore.batch?.size ? `${verb} ${explore.batch.done}/${explore.batch.size}` : `${verb}...`;
+      text = explore.batch?.size ? `探索中 ${explore.batch.done}/${explore.batch.size}` : "探索中...";
     }
     if (label && label.textContent !== text) label.textContent = text;
   }
 
   function updateActionButtons() {
     updateActionButton("greenoil-explore-btn", ACTION_FRIED, "探索", SVG_EXPLORE);
-    updateActionButton("greenoil-match-mis-btn", ACTION_MIS, "匹配MIS", SVG_MATCH_MIS);
   }
 
   function rememberDetail(id, detail) {
@@ -633,82 +588,6 @@ if (window.__greenoil_injected__) {
     }
   }
 
-  async function processMisPlace(session, entry, force) {
-    const live = () => session === explore && !session.cancelled;
-    const found = await bgMessage({
-      action: "exploreMatchMis", sessionId: session.id, place: entry.place, forceRefresh: force
-    });
-    if (!live()) return;
-    entry.misDiag = found.notLoggedIn ? { reason: "MIS 未登录" } :
-      found.verified ? { reason: "MIS + JEV 缓存命中" } : (found.diag || { reason: found.error || "" });
-    if (found.notLoggedIn) {
-      session.misLoggedOut = true;
-      entry.misDone = true;
-      return;
-    }
-    if (!found.success) {
-      if (!found.cancelled) session.misErrors = (session.misErrors || 0) + 1;
-      entry.misDone = true;
-      return;
-    }
-    if (found.customer) {
-      entry.customer = found.customer;
-      entry.misProbability = found.probability ?? null;
-      entry.misDone = true;
-      refreshExploreEntry(entry);
-      return;
-    }
-    const candidates = Array.isArray(found.candidates) ? found.candidates :
-      found.candidate ? [found.candidate] : [];
-    if (!candidates.length) {
-      entry.customer = null;
-      entry.misDone = true;
-      entry.checked = true;
-      refreshExploreEntry(entry);
-      return;
-    }
-
-    // Only an actual MIS candidate needs Google details and the JEV tenant
-    // check. detailedPlace() reuses data loaded earlier by the 探索 action.
-    const place = await detailedPlace(session, entry);
-    if (!place || !live()) return;
-    const checked = await bgMessage({
-      action: "exploreValidateMis", sessionId: session.id, place, customers: candidates
-    });
-    if (!live()) return;
-    entry.misDone = true;
-    if (checked.notLoggedIn) {
-      session.misLoggedOut = true;
-      entry.misDiag = { reason: "MIS 登录已失效" };
-    } else if (checked.disabled) {
-      session.misErrors = (session.misErrors || 0) + 1;
-      if (!session.misJevDisabledNotified) {
-        session.misJevDisabledNotified = true;
-        showToast("MIS 二次校验未启用", checked.error || "JEV 模型不可用", false);
-      }
-    } else if (checked.success && checked.matches) {
-      entry.customer = checked.customer;
-      entry.misProbability = checked.probability ?? null;
-      entry.misDiag = { ...(entry.misDiag || {}), reason: `JEV 已确认当前地点（${Math.round(checked.probability * 100)}%）` };
-      refreshExploreEntry(entry);
-    } else if (checked.success) {
-      entry.customer = null;
-      entry.checked = true;
-      entry.misProbability = checked.probability ?? null;
-      const pct = Number.isFinite(checked.probability) ? `${Math.round(checked.probability * 100)}%` : "无概率";
-      const reason = checked.ambiguous
-        ? `JEV 多候选结果不明确（最高 ${pct}，置信度 ${Math.round((checked.confidence || 0) * 100)}%）`
-        : checked.mode === "choice" && checked.selection === "none_of_above"
-          ? `JEV 判定所有 MIS 候选都不是当前地点（${pct}）`
-          : `JEV 判定并非当前地点（${pct}）`;
-      entry.misDiag = { ...(entry.misDiag || {}), reason };
-      refreshExploreEntry(entry);
-    } else if (!checked.cancelled) {
-      session.misErrors = (session.misErrors || 0) + 1;
-      entry.misDiag = { ...(entry.misDiag || {}), reason: checked.error || "JEV 校验失败" };
-    }
-  }
-
   function addExplorePlaces(session, chunk, entries) {
     const fresh = chunk.filter(p => !session.places.has(p.placeId));
     if (!fresh.length) return;
@@ -718,9 +597,9 @@ if (window.__greenoil_injected__) {
     for (const place of fresh) {
       const known = matched.get(place.placeId);
       const entry = {
-        place, customer: known?.customer || null, fried: Boolean(known?.fried),
-        friedProbability: known?.friedProbability ?? null, misProbability: null,
-        friedDone: false, misDone: false, checked: Boolean(known?.checked), detailLoaded: false, detail: null,
+        place, fried: Boolean(known?.fried),
+        friedProbability: known?.friedProbability ?? null,
+        friedDone: false, checked: Boolean(known?.checked), detailLoaded: false, detail: null,
         detailPromise: null, el: null
       };
       session.places.set(place.placeId, entry);
@@ -738,8 +617,8 @@ if (window.__greenoil_injected__) {
 
   async function runActionBatch(session, action, force) {
     const live = () => session === explore && !session.cancelled;
-    const label = action === ACTION_MIS ? "匹配 MIS" : "探索";
-    const title = action === ACTION_MIS ? "MIS 匹配" : "探索";
+    const label = "探索";
+    const title = "探索";
     session.runningAction = action;
     const batch = { action, size: 0, done: 0 };
     session.batch = batch;
@@ -795,9 +674,8 @@ if (window.__greenoil_injected__) {
     }
 
     batch.size = entries.length;
-    const process = action === ACTION_MIS ? processMisPlace : processFriedPlace;
-    await Promise.allSettled(entries.map(async (entry) => {
-      await process(session, entry, force);
+        await Promise.allSettled(entries.map(async (entry) => {
+      await processFriedPlace(session, entry, force);
       if (live()) {
         batch.done++;
         updatePinsControlBar();
@@ -814,34 +692,18 @@ if (window.__greenoil_injected__) {
     console.table(entries.map(e => ({
       餐馆: e.place.name,
       地址: e.place.displayName,
-      MIS关键词: e.misDiag?.keyword ?? "",
-      MIS记录数: e.misDiag?.records ?? "",
-      MIS结果: e.misDiag?.reason ?? "",
       油炸: e.fried ? `是 ${e.friedProbability != null ? Math.round(e.friedProbability * 100) + "%" : ""}` : "否"
     })));
-    const positive = action === ACTION_MIS ? entries.filter(e => e.customer).length : entries.filter(e => e.fried).length;
+    const positive = entries.filter(e => e.fried).length;
     const notes = [];
-    if (session.misLoggedOut) notes.push("MIS 登录已失效");
     if (session.friedErrors) notes.push(`${session.friedErrors} 家油炸识别失败`);
-    if (session.misErrors) notes.push(`${session.misErrors} 家 MIS 查询或校验失败`);
     const next = session.lister.exhausted ? "窗口内餐馆已全部检查" : `再次点击检查下 ${EXPLORE_BATCH_SIZE} 家`;
     const skipped = session.skipped ? `，跳过已检查 ${session.skipped} 家` : "";
     showToast(`${title}完成`,
-      `${batch.size} 家餐馆：${action === ACTION_MIS ? "MIS 确认" : "油炸"} ${positive} 家${skipped}。${next}${notes.length ? "（" + notes.join("；") + "）" : ""}`, true);
+      `${batch.size} 家餐馆：油炸 ${positive} 家${skipped}。${next}${notes.length ? "（" + notes.join("；") + "）" : ""}`, true);
   }
 
   async function handleExploreClick(action, container, forceRefresh = false) {
-    if (action === ACTION_MIS && container.classList.contains("greenoil-mis-disabled")) {
-      const liveAuth = await bgMessage({ action: "checkMisAuth", force: true });
-      if (liveAuth && liveAuth.loggedIn) {
-        isMisLoggedIn = true;
-        setMisButtonAuth(container, true);
-      } else {
-        window.open("https://mis.greenoilinc.com/login_intranet.php", "_blank");
-        showToast("请先登录 MIS", "正在前往 MIS 登录页面，登录后返回即可使用", false);
-        return;
-      }
-    }
     if (!placesApi) {
       showToast("提示", "扩展已更新，请刷新网页", false);
       return;
@@ -868,19 +730,8 @@ if (window.__greenoil_injected__) {
     runActionBatch(explore, action, forceRefresh);
   }
 
-  function setMisButtonAuth(container, loggedIn) {
-    const btn = container.querySelector("button");
-    const title = loggedIn ? MATCH_MIS_TITLE : "请先登录 MIS 内部系统 (点击前往登录)";
-    container.classList.toggle("greenoil-mis-disabled", !loggedIn);
-    container.title = title;
-    if (btn) {
-      btn.title = title;
-      btn.setAttribute("aria-label", loggedIn ? "匹配MIS" : title);
-    }
-  }
-
-  // ---- Resident pins: matched (MIS / fried) and checked (grey) places ----
-  // From the background caches (MIS part only while logged in to MIS) plus
+  // ---- Resident pins: matched (fried) and checked (grey) places ----
+  // From the background cache plus
   // results found by 探索 in this page. Only the area around the map window
   // is loaded, reloaded when the map leaves it or the zoom changes — the
   // cache can grow large, the DOM (and map-hook's per-frame loop) stays
@@ -888,15 +739,15 @@ if (window.__greenoil_injected__) {
   //   zoom >= CLUSTER_BELOW_ZOOM: single pins in 3x the window, grey ones at
   //     most CHECKED_MAX nearest the center;
   //   zoomed out: grid clusters (one bubble per CLUSTER_CELL_PX square,
-  //     count + MIS/油炸/已检查 ring), computed in background.js, down to
+  //     count + 油炸/已检查 ring), computed in background.js, down to
   //     CLUSTER_MIN_ZOOM (single pins hide below zoom 10 in map-hook).
   // Toggled by the popup checkboxes "地图显示已匹配商家" (gce_show_matched)
   // and "地图显示已检查地点" (gce_show_checked), both default on.
   // A place in the current 探索 shows only its 探索 pin; a place on the
   // route shows only its waypoint pin.
 
-  const matched = new Map(); // placeId -> {place, customer, fried, friedProbability, checked, el}
-  let residentClusters = []; // [{latitude, longitude, count, mis, fried, checked, el}]
+  const matched = new Map(); // placeId -> {place, fried, friedProbability, checked, el}
+  let residentClusters = []; // [{latitude, longitude, count, fried, checked, el}]
   let showMatched = true;
   let showChecked = true;
   const CLUSTER_BELOW_ZOOM = 14;
@@ -940,7 +791,7 @@ if (window.__greenoil_injected__) {
     for (const c of residentClusters) { // under the single pins
       const visible = visibleCluster(c);
       if (!visible.count) continue;
-      const key = `${visible.mis}:${visible.fried}:${visible.checked}`;
+      const key = `${visible.fried}:${visible.checked}`;
       if (!c.el || c.visibleKey !== key) {
         c.el = makeClusterPin(visible);
         c.visibleKey = key;
@@ -955,7 +806,7 @@ if (window.__greenoil_injected__) {
       } else {
         paintExplorePin(m);
       }
-      m.el.classList.toggle("greenoil-checked-pin", !m.customer && !m.fried);
+      m.el.classList.toggle("greenoil-checked-pin", !m.fried);
       m.el.classList.toggle("greenoil-explore-shadowed", matchedIsHidden(m));
       frag.appendChild(m.el);
     }
@@ -968,16 +819,15 @@ if (window.__greenoil_injected__) {
   }
 
   function visibleCluster(c) {
-    const mis = showMatched ? c.mis : 0;
     const fried = showMatched ? c.fried : 0;
     const checked = showChecked ? c.checked : 0;
-    return { ...c, mis, fried, checked, count: mis + fried + checked };
+    return { ...c, fried, checked, count: fried + checked };
   }
 
   /**
    * A cluster bubble, centered on the cluster: size grows with the count,
-   * the ring shows the MIS / 油炸 / 已检查 shares, the glow takes the colour
-   * of the highest one present (MIS > fried > grey), like a heat spot.
+   * the ring shows the 油炸 / 已检查 shares, the glow takes the colour
+   * of the highest one present (fried > grey), like a heat spot.
    */
   function makeClusterPin(c) {
     const el = document.createElement("div");
@@ -987,11 +837,10 @@ if (window.__greenoil_injected__) {
     el.dataset.greenoilLng = String(c.longitude);
     el.dataset.greenoilMinZoom = String(CLUSTER_MIN_ZOOM);
     const size = Math.round(Math.min(64, 26 + 7 * Math.log2(c.count)));
-    const a = (c.mis / c.count) * 360;
-    const b = a + (c.fried / c.count) * 360;
-    const ring = `conic-gradient(${EXPLORE_COLORS.mis} 0deg ${a}deg, ${EXPLORE_COLORS.fried} ${a}deg ${b}deg, ` +
+    const b = (c.fried / c.count) * 360;
+    const ring = `conic-gradient(${EXPLORE_COLORS.fried} 0deg ${b}deg, ` +
       `${EXPLORE_COLORS.candidate} ${b}deg 360deg)`;
-    const top = c.mis ? "mis" : c.fried ? "fried" : "candidate";
+    const top = c.fried ? "fried" : "candidate";
     el.innerHTML = `<div class="greenoil-cluster-body" data-top="${top}"
       style="width:${size}px;height:${size}px;background:${ring}"><span>${formatCount(c.count)}</span></div>`;
     return el;
@@ -1002,13 +851,12 @@ if (window.__greenoil_injected__) {
     if (residentArea?.cluster) return;
     const id = entry.place.placeId;
     const previous = matched.get(id);
-    if (!entry.customer && !entry.fried && !entry.checked) {
+    if (!entry.fried && !entry.checked) {
       previous?.el?.remove();
       matched.delete(id);
       return;
     }
     const m = previous || { place: entry.place, el: null };
-    m.customer = entry.customer || null;
     m.fried = Boolean(entry.fried);
     m.friedProbability = entry.friedProbability ?? null;
     m.checked = Boolean(entry.checked || previous?.checked);
@@ -1069,7 +917,6 @@ if (window.__greenoil_injected__) {
     for (const p of r.places || []) {
       matched.set(p.placeId, {
         place: { placeId: p.placeId, name: p.name, latitude: p.latitude, longitude: p.longitude },
-        customer: p.customer || null,
         fried: Boolean(p.fried),
         friedProbability: p.probability ?? null,
         checked: Boolean(p.checked),
@@ -1079,7 +926,6 @@ if (window.__greenoil_injected__) {
     if (explore) {
       for (const e of explore.places.values()) {
         const cached = matched.get(e.place.placeId);
-        if (!e.misDone && cached?.customer) e.customer = cached.customer;
         if (!e.friedDone && cached?.fried) {
           e.fried = true;
           e.friedProbability = cached.friedProbability;
@@ -1108,14 +954,13 @@ if (window.__greenoil_injected__) {
         renderMatchedPins();
         loadMatchedPlaces(); // grey pins are only loaded while shown
       }
-      // Keep resident pins in sync when JEV confirms/rejects a match, logout
-      // wipes the customer cache, or another Maps tab checked places.
-      if (changes.gce_mis_match_cache || changes.gce_fried_cache ||
+      // Keep resident pins in sync when another Maps tab checked places.
+      if (changes.gce_fried_cache ||
         Object.keys(changes).some(k => k.startsWith("gce_seen:"))) scheduleResidentReload();
     });
   }
 
-  // ---- Name tag on a place page: MIS签约 > 油炸 (one tag, highest wins) ----
+  // ---- Name tag on a place page: 油炸 ----
 
   function placeIdOf(placeData) {
     return String(placeData?.mapsUrl || location.href).match(PLACE_ID_RE)?.[1] || "";
@@ -1131,16 +976,16 @@ if (window.__greenoil_injected__) {
       entry = [...explore.places.values()].find(e =>
         getHaversineDistKm(e.place.latitude, e.place.longitude, placeData.latitude, placeData.longitude) < 0.015);
     }
-    if (entry && (entry.customer || entry.fried)) {
-      return { customer: entry.customer, fried: entry.fried, probability: entry.friedProbability };
+    if (entry && entry.fried) {
+      return { fried: entry.fried, probability: entry.friedProbability };
     }
     const resident = id && matched.get(id);
-    if (resident) return { customer: resident.customer, fried: resident.fried, probability: resident.friedProbability };
+    if (resident) return { fried: resident.fried, probability: resident.friedProbability };
     if (!id) return null;
     const memo = tagMemo.get(id);
     if (memo && Date.now() - memo.t < 15000) return memo.info;
     const r = await bgMessage({ action: "getPlaceTags", placeId: id });
-    const info = r.success ? { customer: r.customer, fried: r.fried, probability: r.probability } : null;
+    const info = r.success ? { fried: r.fried, probability: r.probability } : null;
     tagMemo.set(id, { t: Date.now(), info });
     return info;
   }
@@ -1151,30 +996,21 @@ if (window.__greenoil_injected__) {
     const info = await placeTagInfo(placeData);
     if (seq !== tagRequestSeq) return; // a newer update (other place) won
     const h1 = mainPanel.querySelector("h1.DUwDvf") || mainPanel.querySelector("h1");
-    const existing = document.getElementById("greenoil-heading-mis-badge");
-    const kind = info?.customer ? "mis" : info?.fried ? "fried" : "";
+    const existing = document.getElementById("greenoil-heading-badge");
+    const kind = info?.fried ? "fried" : "";
     if (!h1 || !kind) {
       if (existing) existing.remove();
       return;
     }
-    const key = kind === "mis" ? `mis:${info.customer.code}` : "fried";
+    const key = "fried";
     if (existing && existing.dataset.key === key && existing.parentElement === h1) return;
     if (existing) existing.remove();
 
     const tag = document.createElement("span");
-    tag.id = "greenoil-heading-mis-badge";
+    tag.id = "greenoil-heading-badge";
     tag.className = `greenoil-heading-tag is-${kind}`;
     tag.dataset.key = key;
-    if (kind === "mis") {
-      const c = info.customer;
-      tag.title = `【MIS签约客户】${c.name} (${c.code}) - 点击查看详细信息`;
-      tag.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${SHIELD_PATH}"/></svg><span>MIS签约</span>`;
-      tag.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        openMisModal(c);
-      });
-    } else {
+    {
       const pct = Number.isFinite(info.probability) ? `（jev 判断概率 ${Math.round(info.probability * 100)}%）` : "";
       tag.title = `含油炸食物${pct}`;
       tag.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${FLAME_PATH}"/></svg><span>油炸</span>`;
@@ -1327,130 +1163,6 @@ if (window.__greenoil_injected__) {
     return html;
   }
 
-  function openMisModal(c) {
-    closeMisModal();
-
-    const modal = document.createElement("div");
-    modal.id = "greenoil-mis-modal";
-
-    modal.innerHTML = `
-      <div class="greenoil-mis-card">
-        <div class="greenoil-mis-header">
-          <div class="greenoil-mis-title-row">
-            <div class="greenoil-mis-name-group">
-              <span class="greenoil-mis-name">${c.name || "MIS 签约客户"}</span>
-              <span class="greenoil-mis-code-badge">${c.code || "客户"}</span>
-              <span class="greenoil-mis-sts-badge">${c.sts === 'I' ? '已暂停 (Inactive)' : '签约有效 (Active)'}</span>
-            </div>
-            <button class="greenoil-mis-close-btn" type="button" aria-label="关闭">${SVG_CLOSE}</button>
-          </div>
-          <div class="greenoil-mis-addr-text">${c.address || ''}${c.city ? ', ' + c.city : ''}</div>
-        </div>
-
-        <div class="greenoil-mis-table-wrapper">
-          <table class="greenoil-mis-table">
-            <thead>
-              <tr>
-                <th>Payment <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-                <th>Rate <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-                <th>Container <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-                <th>Driver <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-                <th>Phone <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-                <th>Sts <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-                <th>Contract <span class="th-icon">${SVG_SORT_DOWN}</span></th>
-                <th>Inactive <span class="th-icon">${SVG_SORT_UP_DOWN}</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="td-payment">${c.payment || '-'}</td>
-                <td class="td-rate">${c.rate || '-'}</td>
-                <td class="td-container">${renderContainerChips(c)}</td>
-                <td class="td-driver">${c.driver || '-'}</td>
-                <td class="td-phone">${c.phone || '-'}</td>
-                <td class="td-sts"><b>${c.sts || 'A'}</b></td>
-                <td class="td-contract">${c.contract || '-'}</td>
-                <td class="td-inactive">${c.inactive || ''}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="greenoil-mis-footer">
-          <a class="greenoil-mis-btn-link" href="https://mis.greenoilinc.com/index_intranet.php?view=customer_list&key_word=${encodeURIComponent(c.code || c.name)}" target="_blank">
-            ${SVG_EXTERNAL}
-            <span>在 MIS 中查看</span>
-          </a>
-          <button class="greenoil-mis-btn-add" type="button" style="background-color: ${currentTheme.color || '#059669'};">
-            ${SVG_PLUS}
-            <span>+ 加入当前路线途径点</span>
-          </button>
-        </div>
-      </div>
-    `;
-
-    modal.querySelector(".greenoil-mis-close-btn").addEventListener("click", closeMisModal);
-    modal.addEventListener("click", (e) => {
-      if (e.target === modal) closeMisModal();
-    });
-
-    const addBtn = modal.querySelector(".greenoil-mis-btn-add");
-    addBtn.addEventListener("click", () => {
-      const wp = {
-        name: c.name,
-        address: c.address + (c.city ? ", " + c.city : ""),
-        latitude: c.latitude,
-        longitude: c.longitude,
-        phone: c.phone || "",
-        notes: `MIS编号: ${c.code}, 费率: ${c.rate}, 司机: ${c.driver}`
-      };
-
-      if (chrome.runtime?.id) {
-        chrome.runtime.sendMessage({ action: "addWaypoint", waypoint: wp }, (resp) => {
-          if (resp && resp.success) {
-            showToast("已加入路线", `${c.name} 已加入【${resp.theme?.name || currentTheme.name}】`);
-            refreshWaypointPins();
-            closeMisModal();
-          } else {
-            showToast("提示", resp?.error || `${c.name} 已在路线中`, false);
-          }
-        });
-      }
-    });
-
-    document.body.appendChild(modal);
-  }
-
-  function closeMisModal() {
-    const m = document.getElementById("greenoil-mis-modal");
-    if (m) m.remove();
-  }
-
-  function checkAndUpdateMisAuth(container, btn, force = false) {
-    try {
-      if (!chrome.runtime?.id) {
-        container.dataset.authDebug = "no_runtime_id";
-        return;
-      }
-      chrome.runtime.sendMessage({ action: "checkMisAuth", force }, (auth) => {
-        if (chrome.runtime.lastError) {
-          container.dataset.authDebug = "lastError: " + chrome.runtime.lastError.message;
-          return;
-        }
-        if (!auth) {
-          container.dataset.authDebug = "no_auth_resp";
-          return;
-        }
-        container.dataset.authDebug = JSON.stringify(auth);
-        isMisAuthChecked = true;
-        isMisLoggedIn = Boolean(auth.loggedIn);
-        setMisButtonAuth(container, isMisLoggedIn);
-      });
-    } catch (e) {
-      container.dataset.authDebug = "exception: " + e.message;
-    }
-  }
-
   // The visible map window: URL camera (Google's full-canvas center), canvas
   // size, and the side panel rect so places hidden under it are skipped.
   function currentMapView(place) {
@@ -1473,10 +1185,6 @@ if (window.__greenoil_injected__) {
     return view;
   }
 
-  listen(window, "keydown", (e) => {
-    if (e.key === "Escape") closeMisModal();
-  });
-
   /**
    * Safely extract place name from h1 without being polluted by injected badges
    */
@@ -1488,8 +1196,8 @@ if (window.__greenoil_injected__) {
         text += child.textContent;
       } else if (child.nodeType === Node.ELEMENT_NODE) {
         if (
-          child.id === "greenoil-heading-mis-badge" ||
-          child.classList?.contains("greenoil-heading-mis-badge") ||
+          child.id === "greenoil-heading-badge" ||
+          child.classList?.contains("greenoil-heading-badge") ||
           child.classList?.contains("greenoil-heading-tag") ||
           child.id === "greenoil-heading-waypoint-badge" ||
           child.classList?.contains("greenoil-heading-waypoint-badge")
@@ -1752,9 +1460,7 @@ if (window.__greenoil_injected__) {
           if (oldBtn) oldBtn.remove();
           const oldExploreBtn = document.getElementById("greenoil-explore-btn");
           if (oldExploreBtn) oldExploreBtn.remove();
-          const oldMisBtn = document.getElementById("greenoil-match-mis-btn");
-          if (oldMisBtn) oldMisBtn.remove();
-          const oldBadge = document.getElementById("greenoil-heading-mis-badge");
+          const oldBadge = document.getElementById("greenoil-heading-badge");
           if (oldBadge) oldBadge.remove();
           const oldWpBadge = document.getElementById("greenoil-heading-waypoint-badge");
           if (oldWpBadge) oldWpBadge.remove();
@@ -1768,9 +1474,7 @@ if (window.__greenoil_injected__) {
         if (oldBtn) oldBtn.remove();
         const oldExploreBtn = document.getElementById("greenoil-explore-btn");
         if (oldExploreBtn) oldExploreBtn.remove();
-        const oldMisBtn = document.getElementById("greenoil-match-mis-btn");
-        if (oldMisBtn) oldMisBtn.remove();
-        const oldBadge = document.getElementById("greenoil-heading-mis-badge");
+        const oldBadge = document.getElementById("greenoil-heading-badge");
         if (oldBadge) oldBadge.remove();
         const oldWpBadge = document.getElementById("greenoil-heading-waypoint-badge");
         if (oldWpBadge) oldWpBadge.remove();
@@ -1788,7 +1492,7 @@ if (window.__greenoil_injected__) {
         }
       }
       if (!placeName) {
-        const oldHeadingBadge = document.getElementById("greenoil-heading-mis-badge");
+        const oldHeadingBadge = document.getElementById("greenoil-heading-badge");
         if (oldHeadingBadge) oldHeadingBadge.remove();
         const oldWpBadge = document.getElementById("greenoil-heading-waypoint-badge");
         if (oldWpBadge) oldWpBadge.remove();
@@ -1816,8 +1520,6 @@ if (window.__greenoil_injected__) {
         if (oldBtn) oldBtn.remove();
         const oldExploreBtn = document.getElementById("greenoil-explore-btn");
         if (oldExploreBtn) oldExploreBtn.remove();
-        const oldMisBtn = document.getElementById("greenoil-match-mis-btn");
-        if (oldMisBtn) oldMisBtn.remove();
         lastProcessedKey = "";
         return;
       }
@@ -1830,15 +1532,13 @@ if (window.__greenoil_injected__) {
         if (oldBtn) oldBtn.remove();
         const oldExploreBtn = document.getElementById("greenoil-explore-btn");
         if (oldExploreBtn) oldExploreBtn.remove();
-        const oldMisBtn = document.getElementById("greenoil-match-mis-btn");
-        if (oldMisBtn) oldMisBtn.remove();
         lastProcessedKey = "";
         return;
       }
 
       const currentKey = placeName;
 
-      // Ensure MIS badge is up to date and clean up any heading waypoint badge
+      // Ensure the fried tag is up to date and clean up any heading waypoint badge
       const currentPlaceObj = extractPlaceData();
       if (currentPlaceObj) {
         removeHeadingWaypointBadge();
@@ -1848,16 +1548,13 @@ if (window.__greenoil_injected__) {
       // Already injected and in place for THIS place
       const existingBtn = document.getElementById("greenoil-add-waypoint-btn");
       const existingExploreBtn = document.getElementById("greenoil-explore-btn");
-      const existingMisBtn = document.getElementById("greenoil-match-mis-btn");
       if (existingBtn && targetRow.contains(existingBtn) &&
-        existingExploreBtn && targetRow.contains(existingExploreBtn) &&
-        existingMisBtn && targetRow.contains(existingMisBtn) && currentKey === lastProcessedKey) {
+        existingExploreBtn && targetRow.contains(existingExploreBtn) && currentKey === lastProcessedKey) {
         return;
       }
 
       if (existingBtn) existingBtn.remove();
       if (existingExploreBtn) existingExploreBtn.remove();
-      if (existingMisBtn) existingMisBtn.remove();
       lastProcessedKey = currentKey;
 
       // Create container matching Google's .etWJQ.jym1ob.kdfrQc.WY7ZIb
@@ -2045,43 +1742,6 @@ if (window.__greenoil_injected__) {
       });
       targetRow.insertBefore(exploreContainer, dirItem);
 
-      // POINT 3: [匹配MIS] runs MIS lookup and JEV tenant verification.
-      let misContainer = document.getElementById("greenoil-match-mis-btn");
-      if (misContainer) misContainer.remove();
-
-      misContainer = document.createElement("div");
-      misContainer.id = "greenoil-match-mis-btn";
-      misContainer.className = "etWJQ jym1ob kdfrQc WY7ZIb greenoil-action-container";
-
-      const misBtn = document.createElement("button");
-      misBtn.className = "S9kvJb greenoil-action-btn";
-      misBtn.type = "button";
-      misBtn.setAttribute("aria-label", "匹配MIS");
-      misBtn.title = MATCH_MIS_TITLE;
-
-      const misCircle = document.createElement("span");
-      misCircle.className = "DVeyrd greenoil-action-circle greenoil-mis-circle";
-      misCircle.innerHTML = SVG_MATCH_MIS;
-      misCircle.dataset.icon = ACTION_MIS;
-
-      const misLabel = document.createElement("div");
-      misLabel.className = "R8c4Qb fontLabelMedium greenoil-action-label greenoil-mis-label";
-      misLabel.textContent = "匹配MIS";
-
-      misBtn.appendChild(misCircle);
-      misBtn.appendChild(misLabel);
-      misContainer.appendChild(misBtn);
-
-      checkAndUpdateMisAuth(misContainer, misBtn);
-
-      misBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (misContainer.classList.contains("greenoil-loading")) return;
-        handleExploreClick(ACTION_MIS, misContainer, e.shiftKey);
-      });
-
-      targetRow.insertBefore(misContainer, dirItem);
       updateActionButtons();
     } catch (err) {
       console.warn("[GreenOil] Injection check caught error:", err);
