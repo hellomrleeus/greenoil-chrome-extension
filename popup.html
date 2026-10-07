@@ -32,116 +32,240 @@
       </div>
     </header>
 
-    <!-- 5 Color Routes Palette Toolbar -->
-    <section class="route-palette-section">
-      <div class="palette-top-row">
-        <span class="palette-title">选择路线：</span>
-        <div id="colorPaletteList" class="color-palette-list">
-          <!-- Rendered dynamically: 5 color route buttons -->
+    <!-- Unauthenticated Gate View (Displayed when not logged in; locks all functions) -->
+    <div id="unauthedGateView" class="unauthed-gate-view" style="display: none;">
+      <div class="gate-card">
+        <div class="gate-icon-wrapper">
+          <svg class="gate-icon" viewBox="0 0 24 24">
+            <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
+          </svg>
         </div>
-        <div class="route-toolbar-actions">
-          <button id="btnClearRoute" class="btn-subtle btn-danger-subtle" title="清空当前路线所有途径点">
-            <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-            清空
+        <h2 class="gate-title">请先登录 Green Oil 账号</h2>
+        <p class="gate-desc">使用路线管理、途径点同步与新开餐馆等功能需先登录操作员账号验证身份。</p>
+
+        <div id="gateAlertNotice" class="gate-alert-notice" style="display: none;">
+          <svg class="gate-alert-icon" viewBox="0 0 24 24">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          </svg>
+          <span id="gateAlertText">登录态已失效，请重新登录</span>
+        </div>
+
+        <form id="gateLoginForm" class="gate-form">
+          <div class="form-group">
+            <label for="gateInputUsername">用户名</label>
+            <input type="text" id="gateInputUsername" class="form-input" placeholder="输入用户名" autocomplete="username" required>
+          </div>
+          <div class="form-group">
+            <label for="gateInputPassword">密码</label>
+            <input type="password" id="gateInputPassword" class="form-input" placeholder="输入密码" autocomplete="current-password" required>
+          </div>
+          <div id="gateErrorMsg" class="form-error" style="display: none;"></div>
+          <button type="submit" id="btnGateLogin" class="btn btn-primary full-width gate-submit-btn">
+            登录并开始使用
           </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Authenticated App Content (Only accessible after login) -->
+    <div id="authedAppContent" class="authed-app-content">
+      <!-- Main Navigation Tabs -->
+      <nav class="main-tabs" role="tablist">
+        <button id="tabBtnRoutes" class="main-tab-btn active" role="tab" aria-selected="true">
+          <svg viewBox="0 0 24 24" class="tab-icon"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+          路线管理
+        </button>
+        <button id="tabBtnNewRestaurants" class="main-tab-btn" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" class="tab-icon"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>
+          新开餐馆
+          <span id="tabBadgeNewCount" class="tab-badge" style="display: none;">0</span>
+        </button>
+      </nav>
+
+      <!-- Tab View 1: Routes Management -->
+      <div id="viewRoutesTab" class="tab-view active">
+        <!-- 5 Color Routes Palette Toolbar -->
+        <section class="route-palette-section">
+          <div class="palette-top-row">
+            <span class="palette-title">选择路线：</span>
+            <div id="colorPaletteList" class="color-palette-list">
+              <!-- Rendered dynamically: 5 color route buttons -->
+            </div>
+            <div class="route-toolbar-actions">
+              <button id="btnClearRoute" class="btn-subtle btn-danger-subtle" title="清空当前路线所有途径点">
+                <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                清空
+              </button>
+            </div>
+          </div>
+          <!-- Map layers: Waypoints, Matched places, Checked places, New restaurants -->
+          <div class="map-layer-row">
+            <label class="map-layer-toggle" title="在 Google 地图上常驻显示当前路线的途径点序号图钉">
+              <input type="checkbox" id="toggleWaypointPins" class="custom-checkbox" checked>
+              <span>地图显示路线途径点</span>
+            </label>
+            <span class="map-layer-legend" aria-hidden="true">
+              <i class="legend-dot legend-waypoint"></i>途径点
+            </span>
+          </div>
+          <div class="map-layer-row">
+            <label class="map-layer-toggle" title="在 Google 地图上常驻显示已匹配的商家（油炸）">
+              <input type="checkbox" id="toggleMatchedPins" class="custom-checkbox" checked>
+              <span>地图显示已匹配商家</span>
+            </label>
+            <span class="map-layer-legend" aria-hidden="true">
+              <i class="legend-dot legend-fried"></i>油炸
+            </span>
+          </div>
+          <div class="map-layer-row">
+            <label class="map-layer-toggle" title="常驻显示已检查过、没有匹配结果的地点（灰色）。放大时最多显示离地图中心最近的 600 家，缩小地图时聚合为数字气泡">
+              <input type="checkbox" id="toggleCheckedPins" class="custom-checkbox" checked>
+              <span>地图显示已检查地点</span>
+            </label>
+            <span class="map-layer-legend" aria-hidden="true">
+              <i class="legend-dot legend-checked"></i>已检查
+            </span>
+          </div>
+          <div class="map-layer-row">
+            <label class="map-layer-toggle" title="在 Google 地图上显示近期首次通过卫生检查的新开业餐馆">
+              <input type="checkbox" id="toggleNewPins" class="custom-checkbox" checked>
+              <span>地图显示新开餐馆</span>
+            </label>
+            <span class="map-layer-legend" aria-hidden="true">
+              <i class="legend-dot legend-new"></i>新店
+            </span>
+          </div>
+        </section>
+
+        <!-- Origin Address -->
+        <section class="origin-section">
+          <div class="origin-header">
+            <span class="origin-label">出发点 (Origin)</span>
+            <button id="btnResetOrigin" class="btn-link" title="恢复默认出发点">恢复默认</button>
+          </div>
+          <div class="origin-input-row">
+            <svg class="origin-icon" viewBox="0 0 24 24">
+              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+            </svg>
+            <input type="text" id="inputOrigin" class="origin-input" placeholder="输入出发点地址">
+          </div>
+        </section>
+
+        <!-- Real-time Waypoint Search Bar -->
+        <section class="search-section">
+          <div class="search-input-wrapper">
+            <svg class="search-icon" viewBox="0 0 24 24">
+              <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+            <input type="text" id="inputSearchWaypoints" class="search-input" placeholder="搜索途径点名称或地址..." autocomplete="off">
+            <button id="btnClearSearch" class="btn-clear-search" style="display: none;" title="清空搜索">
+              <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+        </section>
+
+        <!-- Batch Operations Bar -->
+        <section id="batchBar" class="batch-bar">
+          <div class="batch-left">
+            <label class="batch-select-label">
+              <input type="checkbox" id="selectAllWaypoints" class="custom-checkbox">
+              <span id="batchCountLabel" class="batch-label">全选 (0 站)</span>
+            </label>
+          </div>
+          <div class="batch-right">
+            <button id="btnOptimizeRoute" class="btn-batch-action btn-optimize-action" title="按距离与最优经停顺序优化当前路线">
+              <svg viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+              优化排序
+            </button>
+            <button id="btnLockSelected" class="btn-batch-action" title="将所选站点锁定为组合">
+              <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+              锁定组合
+            </button>
+            <button id="btnUnlockSelected" class="btn-batch-action" title="解除所选站点的锁定组合">
+              <svg viewBox="0 0 24 24"><path d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5-2.28 0-4.27 1.54-4.84 3.75l1.93.52C10.5 3.84 11.66 3 13 3c1.66 0 3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/></svg>
+              解锁
+            </button>
+            <button id="btnBatchDelete" class="btn-batch-action btn-danger-action" title="批量删除选中的站点">
+              <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              删除
+            </button>
+          </div>
+        </section>
+
+        <!-- Waypoints List Container -->
+        <main id="waypointsList" class="waypoints-list">
+          <!-- Dynamically Rendered -->
+        </main>
+
+        <!-- Bottom Actions Toolbar -->
+        <footer class="bottom-actions">
+          <button id="btnGenerateNav" class="btn btn-primary" title="在 Google Maps 打开多点导航路线">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+            </svg>
+            生成导航链接
+          </button>
+          <button id="btnExportExcel" class="btn btn-secondary" title="导出标准英文 Excel 表格 (无电话)">
+            <svg viewBox="0 0 24 24">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+            </svg>
+            导出 Excel
+          </button>
+        </footer>
+      </div>
+
+      <!-- Tab View 2: Newly Opened Restaurants (Toronto DineSafe) -->
+      <div id="viewNewRestaurantsTab" class="tab-view" style="display: none;">
+        <!-- Period Selector & Controls Bar -->
+        <section class="new-rest-controls-section">
+          <div class="period-toggle-row">
+            <div class="period-button-group" role="group" aria-label="时间周期选择">
+              <button class="btn-period" data-period="day">最近 1 天</button>
+              <button class="btn-period active" data-period="week">最近 1 周</button>
+              <button class="btn-period" data-period="month">最近 1 个月</button>
+            </div>
+            <button id="btnRefreshNewRest" class="icon-btn" title="重新获取最新数据">
+              <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+            </button>
+          </div>
+        </section>
+
+        <!-- Search in New Restaurants -->
+        <section class="search-section">
+          <div class="search-input-wrapper">
+            <svg class="search-icon" viewBox="0 0 24 24">
+              <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+            <input type="text" id="inputSearchNewRest" class="search-input" placeholder="搜索新开餐馆名称或地址..." autocomplete="off">
+            <button id="btnClearSearchNew" class="btn-clear-search" style="display: none;" title="清空搜索">
+              <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
+        </section>
+
+        <!-- Status Bar & Count -->
+        <div class="new-rest-status-bar">
+          <span id="newRestCountLabel" class="new-rest-count">正在获取新开餐馆...</span>
+          <span class="new-rest-source-tag">数据源: 多伦多卫生检查</span>
         </div>
-      </div>
-      <!-- Map layer: resident pins for matched places -->
-      <div class="map-layer-row">
-        <label class="map-layer-toggle" title="在 Google 地图上常驻显示已匹配的商家（油炸）">
-          <input type="checkbox" id="toggleMatchedPins" class="custom-checkbox" checked>
-          <span>地图显示已匹配商家</span>
-        </label>
-        <span class="map-layer-legend" aria-hidden="true">
-          <i class="legend-dot legend-fried"></i>油炸
-        </span>
-      </div>
-      <div class="map-layer-row">
-        <label class="map-layer-toggle" title="常驻显示已检查过、没有匹配结果的地点（灰色）。放大时最多显示离地图中心最近的 600 家，缩小地图时聚合为数字气泡">
-          <input type="checkbox" id="toggleCheckedPins" class="custom-checkbox" checked>
-          <span>地图显示已检查地点</span>
-        </label>
-        <span class="map-layer-legend" aria-hidden="true">
-          <i class="legend-dot legend-checked"></i>已检查
-        </span>
-      </div>
-    </section>
 
-    <!-- Origin Address -->
-    <section class="origin-section">
-      <div class="origin-header">
-        <span class="origin-label">出发点 (Origin)</span>
-        <button id="btnResetOrigin" class="btn-link" title="恢复默认出发点">恢复默认</button>
-      </div>
-      <div class="origin-input-row">
-        <svg class="origin-icon" viewBox="0 0 24 24">
-          <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-        </svg>
-        <input type="text" id="inputOrigin" class="origin-input" placeholder="输入出发点地址">
-      </div>
-    </section>
+        <!-- New Restaurants List Container -->
+        <main id="newRestaurantsList" class="new-restaurants-list">
+          <!-- Dynamically Rendered -->
+        </main>
 
-    <!-- Real-time Waypoint Search Bar -->
-    <section class="search-section">
-      <div class="search-input-wrapper">
-        <svg class="search-icon" viewBox="0 0 24 24">
-          <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-        </svg>
-        <input type="text" id="inputSearchWaypoints" class="search-input" placeholder="搜索途径点名称或地址..." autocomplete="off">
-        <button id="btnClearSearch" class="btn-clear-search" style="display: none;" title="清空搜索">
-          <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
+        <!-- Bottom Actions for New Restaurants -->
+        <footer class="bottom-actions">
+          <button id="btnExportNewExcel" class="btn btn-primary" title="导出最近开门的 Excel 表格 (包含名称、地址、预计开业时间、经纬度)">
+            <svg viewBox="0 0 24 24">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+            </svg>
+            导出新开店 Excel 表
+          </button>
+        </footer>
       </div>
-    </section>
+    </div>
 
-    <!-- Batch Operations Bar -->
-    <section id="batchBar" class="batch-bar">
-      <div class="batch-left">
-        <label class="batch-select-label">
-          <input type="checkbox" id="selectAllWaypoints" class="custom-checkbox">
-          <span id="batchCountLabel" class="batch-label">全选 (0 站)</span>
-        </label>
-      </div>
-      <div class="batch-right">
-        <button id="btnOptimizeRoute" class="btn-batch-action btn-optimize-action" title="按距离与最优经停顺序优化当前路线">
-          <svg viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-          优化排序
-        </button>
-        <button id="btnLockSelected" class="btn-batch-action" title="将所选站点锁定为组合">
-          <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
-          锁定组合
-        </button>
-        <button id="btnUnlockSelected" class="btn-batch-action" title="解除所选站点的锁定组合">
-          <svg viewBox="0 0 24 24"><path d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5-2.28 0-4.27 1.54-4.84 3.75l1.93.52C10.5 3.84 11.66 3 13 3c1.66 0 3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/></svg>
-          解锁
-        </button>
-        <button id="btnBatchDelete" class="btn-batch-action btn-danger-action" title="批量删除选中的站点">
-          <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-          删除
-        </button>
-      </div>
-    </section>
-
-    <!-- Waypoints List Container -->
-    <main id="waypointsList" class="waypoints-list">
-      <!-- Dynamically Rendered -->
-    </main>
-
-    <!-- Bottom Actions Toolbar -->
-    <footer class="bottom-actions">
-      <button id="btnGenerateNav" class="btn btn-primary" title="在 Google Maps 打开多点导航路线">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
-        </svg>
-        生成导航链接
-      </button>
-      <button id="btnExportExcel" class="btn btn-secondary" title="导出标准英文 Excel 表格 (无电话)">
-        <svg viewBox="0 0 24 24">
-          <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
-        </svg>
-        导出 Excel
-      </button>
-    </footer>
 
     <!-- Window Resizer Bar (Drag to resize popup height up to 600px) -->
     <div id="popupResizer" class="popup-resizer" title="按住拖拽调整窗口高度">

@@ -70,6 +70,7 @@ if (window.__greenoil_injected__) {
 
     let lastProcessedKey = "";
     let currentTheme = { color: "#059669", hoverColor: "#047857", lightColor: "#ecfdf5", borderColor: "#10b981", name: "绿线" };
+    let isLoggedIn = false;
 
     function applyThemeToContainer(container, theme) {
       if (!container || !theme) return;
@@ -79,13 +80,70 @@ if (window.__greenoil_injected__) {
       container.style.setProperty("--go-border", theme.borderColor || "#10b981");
     }
 
+    function applyUnauthedState(container, circle, label) {
+      if (!container) return;
+      container.classList.remove("greenoil-added");
+      container.classList.add("greenoil-not-logged-in");
+      delete container.dataset.belongRouteName;
+      delete container.dataset.belongRouteId;
+      container.title = "未登录 Green Oil 账号，请点击浏览器右上角扩展图标登录后再添加途径点";
+      if (circle) circle.innerHTML = SVG_PLUS;
+      if (label) label.textContent = "+ 途径点 (需登录)";
+    }
+
+    try {
+      if (chrome.storage?.local) {
+        chrome.storage.local.get("authToken", (res) => {
+          isLoggedIn = Boolean(res?.authToken);
+          const btnContainer = document.getElementById("greenoil-add-waypoint-btn");
+          if (btnContainer && !isLoggedIn) {
+            applyUnauthedState(
+              btnContainer,
+              btnContainer.querySelector(".greenoil-action-circle"),
+              btnContainer.querySelector(".greenoil-action-label")
+            );
+          }
+        });
+      }
+      if (chrome.storage?.onChanged) {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (!isAlive()) return;
+          if (area === "local" && changes.authToken) {
+            isLoggedIn = Boolean(changes.authToken.newValue);
+            lastProcessedKey = "";
+            if (!isLoggedIn) {
+              newRestaurantsList = [];
+              renderNewRestaurantPins();
+            } else {
+              loadNewRestaurantsData();
+            }
+            if (typeof checkAndInject === "function") checkAndInject();
+            if (typeof refreshWaypointPins === "function") refreshWaypointPins();
+          }
+        });
+      }
+    } catch (_) {}
+
     try {
       if (chrome.runtime?.id) {
         chrome.runtime.sendMessage({ action: "getActiveTheme" }, (resp) => {
-          if (resp && resp.theme) {
+          if (resp && resp.unauthorized) {
+            isLoggedIn = false;
+            newRestaurantsList = [];
+            renderNewRestaurantPins();
+            const btnContainer = document.getElementById("greenoil-add-waypoint-btn");
+            if (btnContainer) {
+              applyUnauthedState(
+                btnContainer,
+                btnContainer.querySelector(".greenoil-action-circle"),
+                btnContainer.querySelector(".greenoil-action-label")
+              );
+            }
+          } else if (resp && resp.theme) {
+            isLoggedIn = true;
             currentTheme = resp.theme;
             const btnContainer = document.getElementById("greenoil-add-waypoint-btn");
-            if (btnContainer && !btnContainer.classList.contains("greenoil-added")) {
+            if (btnContainer && !btnContainer.classList.contains("greenoil-added") && !btnContainer.classList.contains("greenoil-not-logged-in")) {
               applyThemeToContainer(btnContainer, currentTheme);
             }
             if (typeof rebuildPinElements === "function") rebuildPinElements();
@@ -136,6 +194,17 @@ if (window.__greenoil_injected__) {
           sendResponse({ success: true });
         }
 
+        if (message.action === "centerMapCoordinates") {
+          const wp = {
+            latitude: message.latitude,
+            longitude: message.longitude,
+            name: message.name || "新开餐馆"
+          };
+          const targetPath = `/maps/@${message.latitude},${message.longitude},17z`;
+          inPagePanToLocation(targetPath, wp);
+          sendResponse({ success: true });
+        }
+
       });
     }
 
@@ -157,6 +226,33 @@ if (window.__greenoil_injected__) {
     listen(document, "visibilitychange", () => {
       if (document.visibilityState === "visible") {
         refreshWaypointPins();
+      }
+    });
+
+    function closeAllNewRestaurantTooltips() {
+      if (document.querySelectorAll) {
+        document.querySelectorAll(".greenoil-new-pin.active, .greenoil-new-pin.dismissed").forEach(p => {
+          p.classList.remove("active");
+          p.classList.remove("dismissed");
+        });
+      }
+    }
+
+    listen(window, "pointerdown", (e) => {
+      if (e.target?.closest && !e.target.closest(".greenoil-new-pin")) {
+        closeAllNewRestaurantTooltips();
+      }
+    }, { capture: true });
+
+    listen(window, "click", (e) => {
+      if (e.target?.closest && !e.target.closest(".greenoil-new-pin")) {
+        closeAllNewRestaurantTooltips();
+      }
+    }, { capture: true });
+
+    listen(window, "keydown", (e) => {
+      if (e.key === "Escape") {
+        closeAllNewRestaurantTooltips();
       }
     });
 
@@ -249,9 +345,8 @@ if (window.__greenoil_injected__) {
       layer.id = "greenoil-waypoint-pin-layer";
       overlay.appendChild(layer);
     }
-    // Resident matched pins, then 探索 pins, route waypoints on top
-    // (waypoint > fried > grey).
-    for (const id of ["greenoil-pins-matched", "greenoil-pins-explore", "greenoil-pins-route"]) {
+    // Resident matched pins, then 探索 pins, newly opened pins, route waypoints on top
+    for (const id of ["greenoil-pins-matched", "greenoil-pins-explore", "greenoil-pins-new", "greenoil-pins-route"]) {
       if (!document.getElementById(id)) {
         const group = document.createElement("div");
         group.id = id;
@@ -276,21 +371,286 @@ if (window.__greenoil_injected__) {
     return pin;
   }
 
-  // Route waypoints (rebuilt whenever the route changes). 探索 pins live in
-  // their own group and are updated in place (see the 探索 section).
+  // ==========================================
+  // Newly Opened Restaurants (Toronto DineSafe) Layer
+  // ==========================================
+  const COLOR_NEW = "#0284c7";
+  const SVG_STORE_PATH = "M12 3L2 12h3v8h14v-8h3L12 3zm0 2.5l6 5.4V18H6v-7.1l6-5.4z";
+  let showNewRestaurants = true;
+  let newRestaurantsList = [];
+
+  function isRestaurantInRoute(rest) {
+    if (!Array.isArray(currentRouteWaypoints) || !rest) return false;
+    const rNameNorm = normalizeMapPlaceName(rest.name);
+    const rLat = parseFloat(rest.latitude);
+    const rLng = parseFloat(rest.longitude);
+    return currentRouteWaypoints.some(wp => {
+      if (wp.placeId && rest.id && wp.placeId === rest.id) return true;
+      if (wp.name && rest.name) {
+        const wNorm = normalizeMapPlaceName(wp.name);
+        if (wNorm && rNameNorm && (wNorm === rNameNorm || wNorm.includes(rNameNorm) || rNameNorm.includes(wNorm))) return true;
+      }
+      if (Number.isFinite(wp.latitude) && Number.isFinite(rLat) && Number.isFinite(wp.longitude) && Number.isFinite(rLng)) {
+        if (getHaversineDistKm(wp.latitude, wp.longitude, rLat, rLng) < 0.05) return true;
+      }
+      return false;
+    });
+  }
+
+  function makeNewRestaurantPin(rest) {
+    const lat = parseFloat(rest.latitude);
+    const lng = parseFloat(rest.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    const pin = document.createElement("div");
+    pin.className = "greenoil-waypoint-map-pin greenoil-new-pin";
+    pin.dataset.kind = "new-restaurant";
+    pin.dataset.greenoilLat = String(lat);
+    pin.dataset.greenoilLng = String(lng);
+    pin.setAttribute("tabindex", "0");
+    pin.setAttribute("role", "button");
+    pin.setAttribute("aria-label", `${rest.name} - ${rest.address}`);
+
+    const dateText = rest.estimatedOpeningDate || rest.firstInspectionDate || "";
+    const inRoute = isRestaurantInRoute(rest);
+
+    pin.innerHTML = `
+      <div class="greenoil-pin-body">
+        ${pinSvg(COLOR_NEW)}
+        <span class="greenoil-new-icon">${pinGlyph(SVG_STORE_PATH)}</span>
+      </div>
+      <div class="greenoil-new-tooltip">
+        <div class="greenoil-new-tooltip-header">
+          <div class="greenoil-new-tooltip-badge">新开业 (首次卫生检查)</div>
+          <button type="button" class="greenoil-new-tooltip-close-btn" title="关闭" aria-label="关闭">
+            ${SVG_CLOSE}
+          </button>
+        </div>
+        <div class="greenoil-new-tooltip-name">${escapeHtml(rest.name || "")}</div>
+        <div class="greenoil-new-tooltip-address">${escapeHtml(rest.address || "")}</div>
+        ${dateText ? `<div class="greenoil-new-tooltip-meta">预计开业: ${escapeHtml(dateText)}</div>` : ""}
+        <div class="greenoil-new-tooltip-footer">
+          <button type="button" class="greenoil-new-tooltip-add-btn${inRoute ? " is-added" : (!isLoggedIn ? " is-unauthed" : "")}"
+            title="${inRoute ? "已存在于当前路线中" : (!isLoggedIn ? "需要登录 Green Oil 账号" : "加入当前路线途径点")}">
+            ${inRoute ? SVG_CHECK : SVG_PLUS}
+            <span>${inRoute ? "已在路线中" : (!isLoggedIn ? "加入路线 (需登录)" : "加入路线")}</span>
+          </button>
+        </div>
+      </div>`;
+
+    const tooltip = pin.querySelector(".greenoil-new-tooltip");
+    if (tooltip) {
+      tooltip.addEventListener("click", (e) => {
+        e.stopPropagation();
+      });
+    }
+
+    const closeBtn = pin.querySelector(".greenoil-new-tooltip-close-btn");
+    if (closeBtn) {
+      closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        pin.classList.remove("active");
+        pin.classList.add("dismissed");
+      });
+    }
+
+    pin.addEventListener("mouseleave", () => {
+      pin.classList.remove("dismissed");
+    });
+
+    const addBtn = pin.querySelector(".greenoil-new-tooltip-add-btn");
+    if (addBtn) {
+      addBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+
+        if (!isLoggedIn) {
+          showToast("请先登录", "添加途径点需要登录态。请点击浏览器右上角的【Green Oil 路线助手】扩展图标完成登录。", false, "warning");
+          return;
+        }
+
+        if (isRestaurantInRoute(rest)) {
+          showToast("提示", `"${rest.name}" 已在路线中`, true);
+          return;
+        }
+
+        addBtn.disabled = true;
+        const originalHtml = addBtn.innerHTML;
+        addBtn.innerHTML = `${SVG_SPINNER}<span>添加中...</span>`;
+
+        const wp = {
+          name: rest.name || "新开餐馆",
+          address: rest.address || "",
+          latitude: lat,
+          longitude: lng,
+          openingHours: "",
+          phone: rest.phone || "",
+          placeId: rest.id || "",
+          mapsUrl: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
+          addedAt: new Date().toISOString()
+        };
+
+        try {
+          if (!chrome.runtime?.id) {
+            showToast("提示", "扩展已重新加载，请刷新网页", false);
+            addBtn.disabled = false;
+            addBtn.innerHTML = originalHtml;
+            return;
+          }
+
+          chrome.runtime.sendMessage({
+            action: "addWaypoint",
+            waypoint: wp
+          }, (response) => {
+            addBtn.disabled = false;
+            if (chrome.runtime.lastError) {
+              showToast("通信异常", "无法连接后台服务，请刷新网页", false);
+              addBtn.innerHTML = originalHtml;
+              return;
+            }
+
+            if (response && response.unauthorized) {
+              isLoggedIn = false;
+              newRestaurantsList = [];
+              renderNewRestaurantPins();
+              addBtn.className = "greenoil-new-tooltip-add-btn is-unauthed";
+              addBtn.innerHTML = `${SVG_PLUS}<span>加入路线 (需登录)</span>`;
+              showToast("登录态已失效", "登录已过期，请点击浏览器右上角扩展图标重新登录。", false, "warning");
+              return;
+            }
+
+            if (response && response.success) {
+              addBtn.className = "greenoil-new-tooltip-add-btn is-added";
+              addBtn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
+              showToast("已加入路线", `${wp.name} (已加入【${response.theme?.name || currentTheme?.name}】，共 ${response.count} 站)`);
+              refreshWaypointPins();
+            } else if (response && (response.alreadyExists || response.alreadyExistsInOther)) {
+              addBtn.className = "greenoil-new-tooltip-add-btn is-added";
+              addBtn.innerHTML = `${SVG_CHECK}<span>已在路线中</span>`;
+              const rName = response.theme?.name || response.belongRouteName || "路线";
+              showToast("提示", `${wp.name} 已存在于【${rName}】中`, false);
+            } else {
+              addBtn.innerHTML = originalHtml;
+              showToast("添加失败", response?.error || "请稍后重试", false);
+            }
+          });
+        } catch (err) {
+          addBtn.disabled = false;
+          addBtn.innerHTML = originalHtml;
+          showToast("通信异常", "扩展连接失败", false);
+        }
+      });
+    }
+
+    pin.addEventListener("click", (e) => {
+      if (e.target?.closest && e.target.closest(".greenoil-new-tooltip")) return;
+      e.stopPropagation();
+      const wasActive = pin.classList.contains("active");
+      if (document.querySelectorAll) {
+        document.querySelectorAll(".greenoil-new-pin.active").forEach(p => {
+          if (p !== pin) p.classList.remove("active");
+        });
+      }
+      if (wasActive) {
+        pin.classList.remove("active");
+        pin.classList.add("dismissed");
+      } else {
+        pin.classList.remove("dismissed");
+        pin.classList.add("active");
+      }
+    });
+
+    return pin;
+  }
+
+  function renderNewRestaurantPins() {
+    const group = document.getElementById("greenoil-pins-new");
+    if (!group) return;
+
+    if (!isLoggedIn || !showNewRestaurants) {
+      group.replaceChildren();
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const r of newRestaurantsList) {
+      const pin = makeNewRestaurantPin(r);
+      if (pin) frag.appendChild(pin);
+    }
+    group.replaceChildren(frag);
+    window.dispatchEvent(new Event("greenoil:pins"));
+  }
+
+  const NEW_REST_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  async function loadNewRestaurantsData() {
+    try {
+      if (!chrome?.storage?.local) return;
+      const stored = await chrome.storage.local.get([
+        "authToken",
+        "gce_show_new_restaurants",
+        "gce_new_restaurants_cache",
+        "gce_new_restaurants_updated"
+      ]);
+      isLoggedIn = Boolean(stored.authToken);
+      if (!isLoggedIn) {
+        newRestaurantsList = [];
+        renderNewRestaurantPins();
+        return;
+      }
+      showNewRestaurants = stored.gce_show_new_restaurants !== false;
+      const isCacheValid = Array.isArray(stored.gce_new_restaurants_cache) &&
+        stored.gce_new_restaurants_cache.length > 0 &&
+        typeof stored.gce_new_restaurants_updated === "number" &&
+        (Date.now() - stored.gce_new_restaurants_updated < NEW_REST_CACHE_TTL_MS);
+
+      if (isCacheValid) {
+        newRestaurantsList = stored.gce_new_restaurants_cache;
+        renderNewRestaurantPins();
+      } else {
+        const res = await bgMessage({ action: "getNewlyOpenedRestaurants", period: "week" });
+        if (!isLoggedIn) {
+          newRestaurantsList = [];
+          renderNewRestaurantPins();
+          return;
+        }
+        if (res && res.unauthorized) {
+          isLoggedIn = false;
+          newRestaurantsList = [];
+          renderNewRestaurantPins();
+          return;
+        }
+        if (res && res.success && Array.isArray(res.data)) {
+          newRestaurantsList = res.data;
+          renderNewRestaurantPins();
+        } else {
+          newRestaurantsList = [];
+          renderNewRestaurantPins();
+        }
+      }
+    } catch (err) {
+      console.warn("[GreenOil] Failed to load new restaurants data:", err);
+    }
+  }
+
+  // Route waypoints (rebuilt whenever the route changes).
+  let showWaypoints = true;
   function rebuildPinElements() {
     const layer = ensurePinLayer();
     if (!layer) return;
     const themeColor = currentTheme?.color || "#059669";
     const frag = document.createDocumentFragment();
 
-    currentRouteWaypoints.forEach((wp, idx) => {
-      const lat = parseFloat(wp.latitude);
-      const lng = parseFloat(wp.longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-      frag.appendChild(makePin(lat, lng, "waypoint", themeColor,
-        `<span class="greenoil-pin-num">${idx + 1}</span>`));
-    });
+    if (showWaypoints) {
+      currentRouteWaypoints.forEach((wp, idx) => {
+        const lat = parseFloat(wp.latitude);
+        const lng = parseFloat(wp.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+        frag.appendChild(makePin(lat, lng, "waypoint", themeColor,
+          `<span class="greenoil-pin-num">${idx + 1}</span>`));
+      });
+    }
 
     document.getElementById("greenoil-pins-route").replaceChildren(frag);
     // Google may have rebuilt its map container (and our overlay with it):
@@ -306,6 +666,7 @@ if (window.__greenoil_injected__) {
     }
     applyExploreShadowing();
     renderMatchedPins();
+    renderNewRestaurantPins();
     // Ask map-hook.js to position the new pins right away.
     window.dispatchEvent(new Event("greenoil:pins"));
   }
@@ -572,11 +933,15 @@ if (window.__greenoil_injected__) {
     if (!place || !live()) return;
     const r = await bgMessage({ action: "exploreClassifyFried", sessionId: session.id, place, forceRefresh: force });
     if (!live()) return;
-    entry.friedDone = true;
-    if (r.disabled) {
+    if (r.disabled || r.unauthorized) {
+      if (r.unauthorized) isLoggedIn = false;
+      const addBtn = document.getElementById("greenoil-add-waypoint-btn");
+      if (addBtn && !isLoggedIn) {
+        applyUnauthedState(addBtn, addBtn.querySelector(".greenoil-action-circle"), addBtn.querySelector(".greenoil-action-label"));
+      }
       if (!session.jevDisabledNotified) {
         session.jevDisabledNotified = true;
-        showToast("油炸识别未启用", r.error || "JEV 模型不可用", false);
+        showToast("需要登录", r.error || "请先在扩展弹窗中登录 Green Oil 账号", false);
       }
     } else if (r.success) {
       entry.fried = r.fried === true;
@@ -704,6 +1069,10 @@ if (window.__greenoil_injected__) {
   }
 
   async function handleExploreClick(action, container, forceRefresh = false) {
+    if (!isLoggedIn) {
+      showToast("需要登录", "探索餐馆功能需要登录态，请先点击浏览器右上角扩展图标登录 Green Oil 账号。", false);
+      return;
+    }
     if (!placesApi) {
       showToast("提示", "扩展已更新，请刷新网页", false);
       return;
@@ -938,13 +1307,19 @@ if (window.__greenoil_injected__) {
   }
 
   if (chrome.storage?.local) {
-    chrome.storage.local.get(["gce_show_matched", "gce_show_checked"]).then((d) => {
+    chrome.storage.local.get(["gce_show_matched", "gce_show_checked", "gce_show_waypoints"]).then((d) => {
       showMatched = d.gce_show_matched !== false;
       showChecked = d.gce_show_checked !== false;
+      showWaypoints = d.gce_show_waypoints !== false;
       renderMatchedPins();
+      rebuildPinElements();
     }).catch(() => {});
     chrome.storage.onChanged.addListener((changes, area) => {
       if (!isAlive() || area !== "local") return;
+      if (changes.gce_show_waypoints) {
+        showWaypoints = changes.gce_show_waypoints.newValue !== false;
+        rebuildPinElements();
+      }
       if (changes.gce_show_matched) {
         showMatched = changes.gce_show_matched.newValue !== false;
         renderMatchedPins();
@@ -953,6 +1328,21 @@ if (window.__greenoil_injected__) {
         showChecked = changes.gce_show_checked.newValue !== false;
         renderMatchedPins();
         loadMatchedPlaces(); // grey pins are only loaded while shown
+      }
+      if (changes.gce_show_new_restaurants) {
+        showNewRestaurants = changes.gce_show_new_restaurants.newValue !== false;
+        if (!isLoggedIn) newRestaurantsList = [];
+        renderNewRestaurantPins();
+      }
+      if (changes.gce_new_restaurants_cache) {
+        if (isLoggedIn) {
+          newRestaurantsList = Array.isArray(changes.gce_new_restaurants_cache.newValue)
+            ? changes.gce_new_restaurants_cache.newValue
+            : [];
+        } else {
+          newRestaurantsList = [];
+        }
+        renderNewRestaurantPins();
       }
       // Keep resident pins in sync when another Maps tab checked places.
       if (changes.gce_fried_cache ||
@@ -1404,7 +1794,7 @@ if (window.__greenoil_injected__) {
     return hash;
   }
 
-  function showToast(title, description, isSuccess = true) {
+  function showToast(title, description, isSuccess = true, type = "") {
     let container = document.getElementById("greenoil-toast-container");
     if (!container) {
       container = document.createElement("div");
@@ -1414,7 +1804,8 @@ if (window.__greenoil_injected__) {
     }
 
     const toast = document.createElement("div");
-    toast.className = "greenoil-toast";
+    const toastType = type || (isSuccess ? "success" : "warning");
+    toast.className = `greenoil-toast greenoil-toast-${toastType}`;
 
     const iconSpan = document.createElement("span");
     iconSpan.className = "greenoil-toast-icon";
@@ -1443,7 +1834,7 @@ if (window.__greenoil_injected__) {
       setTimeout(() => {
         if (toast.parentElement) toast.parentElement.removeChild(toast);
       }, 250);
-    }, 3200);
+    }, 3500);
   }
 
   /**
@@ -1583,6 +1974,11 @@ if (window.__greenoil_injected__) {
       btn.appendChild(label);
       container.appendChild(btn);
 
+      // If currently not logged in, apply grey button state immediately
+      if (!isLoggedIn) {
+        applyUnauthedState(container, circle, label);
+      }
+
       // Check if place is already in ANY of the 5 color routes
       try {
         if (chrome.runtime?.id) {
@@ -1598,6 +1994,14 @@ if (window.__greenoil_injected__) {
               longitude: preliminaryData.longitude
             }, (resp) => {
               if (chrome.runtime.lastError) return;
+              if (resp && resp.unauthorized) {
+                isLoggedIn = false;
+                applyUnauthedState(container, circle, label);
+                return;
+              }
+              isLoggedIn = true;
+              container.classList.remove("greenoil-not-logged-in");
+
               if (resp && resp.inRoute) {
                 // Requirement 2: Show the route it belongs to!
                 circle.innerHTML = SVG_CHECK;
@@ -1634,6 +2038,11 @@ if (window.__greenoil_injected__) {
         e.stopPropagation();
         e.preventDefault();
 
+        if (!isLoggedIn || container.classList.contains("greenoil-not-logged-in")) {
+          showToast("请先登录", "添加途径点需要登录态。请点击浏览器右上角的【Green Oil 路线助手】扩展图标完成登录。", false, "warning");
+          return;
+        }
+
         if (container.classList.contains("greenoil-added")) {
           const belongName = container.dataset.belongRouteName || "路线";
           showToast("提示", `该地点已存在于【${belongName}】中`, true);
@@ -1666,6 +2075,13 @@ if (window.__greenoil_injected__) {
             if (chrome.runtime.lastError) {
               showToast("通信异常", "无法连接后台服务，请刷新网页", false);
               label.textContent = "+ 途径点";
+              return;
+            }
+
+            if (response && response.unauthorized) {
+              isLoggedIn = false;
+              applyUnauthedState(container, circle, label);
+              showToast("登录态已失效", "登录已过期，请点击浏览器右上角扩展图标重新登录。", false, "warning");
               return;
             }
 
@@ -1755,8 +2171,8 @@ if (window.__greenoil_injected__) {
     setInterval(() => {
       if (!document.hidden) {
         checkAndInject();
-        const hasPins = currentRouteWaypoints.length > 0 || Boolean(explore && explore.places.size) ||
-          matched.size > 0 || residentClusters.length > 0;
+        const hasPins = (showWaypoints && currentRouteWaypoints.length > 0) || Boolean(explore && explore.places.size) ||
+          matched.size > 0 || residentClusters.length > 0 || (showNewRestaurants && newRestaurantsList.length > 0);
         const overlay = document.getElementById("greenoil-waypoint-pins-overlay");
         const canvas = mapCanvas();
         if (hasPins && canvas && overlay?.previousElementSibling !== canvas) rebuildPinElements();
@@ -1767,6 +2183,7 @@ if (window.__greenoil_injected__) {
 
     ensureMapHook();
     loadMatchedPlaces();
+    loadNewRestaurantsData();
 
     // Initial check immediately on script evaluation
     checkAndInject();

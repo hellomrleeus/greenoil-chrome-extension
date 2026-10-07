@@ -64,7 +64,7 @@ const hasWaypoints = (routes) => Object.values(routes || {}).some((r) => r?.wayp
 const LOGIN_REQUIRED = "未登录或登录已过期，请在扩展弹窗中登录 Green Oil 账号";
 
 function apiError(res, fallback) {
-  if (res?.error === "Unauthorized") return loginRequired();
+  if (res?.error === "Unauthorized" || res?.unauthorized) return loginRequired();
   return new Error(res?.error || res?.message || fallback);
 }
 

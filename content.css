@@ -78,6 +78,31 @@
   filter: brightness(0.96);
 }
 
+/* Not Logged In (Unauthenticated) Grey State */
+.greenoil-action-container.greenoil-not-logged-in .greenoil-action-circle {
+  background-color: #9ca3af !important;
+  border: 1.5px solid #d1d5db !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  opacity: 0.9 !important;
+}
+
+.greenoil-action-container.greenoil-not-logged-in:hover .greenoil-action-circle {
+  background-color: #6b7280 !important;
+  border-color: #9ca3af !important;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15) !important;
+  transform: none !important;
+}
+
+.greenoil-action-container.greenoil-not-logged-in .greenoil-action-label {
+  color: #6b7280 !important;
+  font-weight: 500 !important;
+}
+
+.greenoil-action-container.greenoil-not-logged-in:hover .greenoil-action-label {
+  color: #374151 !important;
+}
+
 /* Bottom Text Label Under the Circle */
 .greenoil-action-label {
   font-family: "Google Sans Text", "Google Sans", Roboto, "Noto Sans TC", -apple-system, sans-serif !important;
@@ -165,6 +190,22 @@
   line-height: 1.4;
   animation: greenoil-toast-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   transition: opacity 0.2s ease;
+}
+
+.greenoil-toast.greenoil-toast-warning {
+  border-left-color: #f59e0b !important;
+}
+
+.greenoil-toast.greenoil-toast-warning .greenoil-toast-icon {
+  color: #f59e0b !important;
+}
+
+.greenoil-toast.greenoil-toast-error {
+  border-left-color: #ef4444 !important;
+}
+
+.greenoil-toast.greenoil-toast-error .greenoil-toast-icon {
+  color: #ef4444 !important;
 }
 
 .greenoil-toast.greenoil-toast-exit {
@@ -558,3 +599,225 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
     opacity: 1;
   }
 }
+
+/* ===================================================
+   Newly Opened Restaurants Layer & Tooltip
+   =================================================== */
+
+#greenoil-pins-new {
+  z-index: 4 !important;
+}
+
+.greenoil-new-pin {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+
+.greenoil-new-pin .greenoil-pin-body {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.greenoil-new-pin:hover .greenoil-pin-body,
+.greenoil-new-pin:focus .greenoil-pin-body,
+.greenoil-new-pin.active .greenoil-pin-body {
+  transform: scale(1.22);
+  filter: drop-shadow(0 2px 6px rgba(2, 132, 199, 0.5)) !important;
+}
+
+.greenoil-new-icon {
+  position: absolute !important;
+  left: 8px !important;
+  top: 8px !important;
+  width: 12px !important;
+  height: 12px !important;
+  line-height: 0 !important;
+  pointer-events: none !important;
+  user-select: none !important;
+}
+
+/* Hover Tooltip / Card */
+.greenoil-new-tooltip {
+  position: absolute !important;
+  left: 18px !important;
+  top: -24px !important;
+  transform: translateY(-50%) translateX(4px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  background: #ffffff !important;
+  color: #1f2937 !important;
+  border-radius: 8px !important;
+  padding: 10px 14px !important;
+  min-width: 210px !important;
+  max-width: 290px !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08) !important;
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.18s;
+  z-index: 99999 !important;
+  user-select: text !important;
+  white-space: normal !important;
+  line-height: 1.4 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Google Sans", sans-serif !important;
+}
+
+.greenoil-new-pin:hover:not(.dismissed) .greenoil-new-tooltip,
+.greenoil-new-pin:focus-within:not(.dismissed) .greenoil-new-tooltip,
+.greenoil-new-pin.active:not(.dismissed) .greenoil-new-tooltip {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transform: translateY(-50%) translateX(0);
+}
+
+.greenoil-new-pin.dismissed .greenoil-new-tooltip {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.greenoil-new-tooltip-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-bottom: 5px !important;
+  gap: 8px !important;
+}
+
+.greenoil-new-tooltip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #bfdbfe;
+}
+
+.greenoil-new-tooltip-close-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  color: #9ca3af !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  transition: color 0.15s ease, background 0.15s ease !important;
+  flex-shrink: 0 !important;
+}
+
+.greenoil-new-tooltip-close-btn:hover {
+  color: #374151 !important;
+  background: #f3f4f6 !important;
+}
+
+.greenoil-new-tooltip-close-btn svg {
+  width: 14px !important;
+  height: 14px !important;
+  fill: currentColor !important;
+  pointer-events: none !important;
+}
+
+.greenoil-new-tooltip-name {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  color: #111827 !important;
+  margin-bottom: 3px !important;
+}
+
+.greenoil-new-tooltip-address {
+  font-size: 11px !important;
+  color: #4b5563 !important;
+  margin-bottom: 6px !important;
+  word-break: break-word;
+}
+
+.greenoil-new-tooltip-meta {
+  font-size: 11px !important;
+  color: #059669 !important;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.greenoil-new-tooltip-footer {
+  margin-top: 8px !important;
+  padding-top: 6px !important;
+  border-top: 1px solid #f3f4f6 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+}
+
+.greenoil-new-tooltip-add-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  height: 25px !important;
+  padding: 0 9px !important;
+  border-radius: 5px !important;
+  border: 1px solid var(--go-border, #10b981) !important;
+  background: var(--go-light, #ecfdf5) !important;
+  color: var(--go-theme, #059669) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  white-space: nowrap !important;
+  user-select: none !important;
+  box-sizing: border-box !important;
+  line-height: 1 !important;
+  font-family: inherit !important;
+}
+
+.greenoil-new-tooltip-add-btn svg {
+  width: 12px !important;
+  height: 12px !important;
+  fill: currentColor !important;
+  flex-shrink: 0 !important;
+}
+
+.greenoil-new-tooltip-add-btn:hover:not(:disabled):not(.is-added) {
+  background: var(--go-light, #d1fae5) !important;
+  border-color: var(--go-theme, #059669) !important;
+  color: var(--go-hover, #047857) !important;
+  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.25) !important;
+}
+
+.greenoil-new-tooltip-add-btn.is-added {
+  background: #f0fdf4 !important;
+  border-color: #bbf7d0 !important;
+  color: #166534 !important;
+  cursor: default !important;
+  box-shadow: none !important;
+}
+
+.greenoil-new-tooltip-add-btn.is-unauthed {
+  background: #f9fafb !important;
+  border-color: #d1d5db !important;
+  color: #6b7280 !important;
+  cursor: pointer !important;
+}
+
+.greenoil-new-tooltip-add-btn.is-unauthed:hover {
+  background: #f3f4f6 !important;
+  border-color: #9ca3af !important;
+  color: #374151 !important;
+}
+
+.greenoil-new-tooltip-add-btn:disabled:not(.is-added) {
+  opacity: 0.6 !important;
+  cursor: not-allowed !important;
+}
+
+

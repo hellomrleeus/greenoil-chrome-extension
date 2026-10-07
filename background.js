@@ -1137,6 +1137,74 @@ function isPlaceMatch(w, q) {
         return;
       }
 
+      // 14. Fetch newly opened restaurants (DineSafe, authenticated)
+      if (message.action === "getNewlyOpenedRestaurants") {
+        const token = (await chrome.storage.local.get("authToken")).authToken || "";
+        if (!token) {
+          sendResponse({ success: false, unauthorized: true, error: "未登录或登录已过期，请在扩展弹窗中登录 Green Oil 账号" });
+          return;
+        }
+        const period = message.period || "week";
+        const res = await GreenOilApi.getNewlyOpenedRestaurants(token, period, message.options);
+        if (res.unauthorized) {
+          sendResponse({ success: false, unauthorized: true, error: "登录态已过期，请在扩展弹窗中重新登录" });
+          return;
+        }
+        if (res.success && Array.isArray(res.data)) {
+          await chrome.storage.local.set({
+            gce_new_restaurants_cache: res.data,
+            gce_new_restaurants_period: period,
+            gce_new_restaurants_updated: Date.now()
+          });
+        }
+        sendResponse(res);
+        return;
+      }
+
+      // 15. Get cached newly opened restaurants for map pin rendering (requires authentication and 24h expiry check)
+      if (message.action === "getCachedNewRestaurants") {
+        const stored = await chrome.storage.local.get([
+          "authToken",
+          "gce_new_restaurants_cache",
+          "gce_show_new_restaurants",
+          "gce_new_restaurants_period",
+          "gce_new_restaurants_updated"
+        ]);
+        if (!stored.authToken) {
+          sendResponse({
+            success: true,
+            restaurants: [],
+            showOnMap: false,
+            period: "week",
+            unauthorized: true
+          });
+          return;
+        }
+        const CACHE_TTL_24H = 24 * 60 * 60 * 1000;
+        const isNotExpired = typeof stored.gce_new_restaurants_updated === "number" &&
+          (Date.now() - stored.gce_new_restaurants_updated < CACHE_TTL_24H);
+
+        sendResponse({
+          success: true,
+          restaurants: isNotExpired ? (stored.gce_new_restaurants_cache || []) : [],
+          showOnMap: stored.gce_show_new_restaurants !== false,
+          period: stored.gce_new_restaurants_period || "week",
+          expired: !isNotExpired
+        });
+        return;
+      }
+
+      // 16. Get current authentication status
+      if (message.action === "getAuthStatus") {
+        const { authToken, authUser } = await chrome.storage.local.get(["authToken", "authUser"]);
+        sendResponse({
+          success: true,
+          isLoggedIn: Boolean(authToken),
+          authUser: authUser || ""
+        });
+        return;
+      }
+
       sendResponse({ success: false, error: "未知操作" });
     } catch (err) {
       if (!err.unauthorized) console.error("Runtime message handler error:", err);

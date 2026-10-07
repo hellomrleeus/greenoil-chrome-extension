@@ -79,6 +79,9 @@ const SVG_STAR = `<svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.0
 const SVG_CLOCK = `<svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>`;
 const SVG_EMPTY = `<svg class="empty-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
 const SVG_PIN_MINI = `<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
+const SVG_CALENDAR = `<svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>`;
+const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
+const SVG_TARGET = `<svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>`;
 
 class PopupController {
   constructor() {
@@ -90,14 +93,42 @@ class PopupController {
     this.authToken = "";
     this.authUser = "";
     this.lastSyncedAt = null;
+    this.isLoggedIn = false;
+
+    // Tabs & Newly Opened Restaurants state
+    this.activeTab = "routes";
+    this.currentNewPeriod = "week";
+    this.newRestaurants = [];
+    this.newRestSearchQuery = "";
+    this.showNewPins = true;
 
     this.initElements();
     this.initResizer();
+    this.initScrollGuard();
     this.bindEvents();
     this.loadState();
   }
 
+  initScrollGuard() {
+    window.addEventListener("scroll", () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) {
+        window.scrollTo(0, 0);
+      }
+    });
+  }
+
   initElements() {
+    // Unauthenticated Gate View Elements
+    this.elUnauthedGateView = document.getElementById("unauthedGateView");
+    this.elAuthedAppContent = document.getElementById("authedAppContent");
+    this.elGateAlertNotice = document.getElementById("gateAlertNotice");
+    this.elGateAlertText = document.getElementById("gateAlertText");
+    this.elGateLoginForm = document.getElementById("gateLoginForm");
+    this.elGateInputUsername = document.getElementById("gateInputUsername");
+    this.elGateInputPassword = document.getElementById("gateInputPassword");
+    this.elGateErrorMsg = document.getElementById("gateErrorMsg");
+    this.elBtnGateLogin = document.getElementById("btnGateLogin");
+
     this.elColorPaletteList = document.getElementById("colorPaletteList");
     this.elBtnOptimizeRoute = document.getElementById("btnOptimizeRoute");
     this.elBtnClearRoute = document.getElementById("btnClearRoute");
@@ -116,6 +147,7 @@ class PopupController {
     this.elBtnBatchDelete = document.getElementById("btnBatchDelete");
 
     this.elWaypointsList = document.getElementById("waypointsList");
+    this.elToggleWaypointPins = document.getElementById("toggleWaypointPins");
     this.elToggleMatchedPins = document.getElementById("toggleMatchedPins");
     this.elToggleCheckedPins = document.getElementById("toggleCheckedPins");
 
@@ -149,6 +181,21 @@ class PopupController {
     this.elBtnLogout = document.getElementById("btnLogout");
     this.elBtnManualSync = document.getElementById("btnManualSync");
     this.elAuthErrorMsg = document.getElementById("authErrorMsg");
+
+    // Tabs & Newly Opened Restaurants
+    this.tabBtnRoutes = document.getElementById("tabBtnRoutes");
+    this.tabBtnNewRestaurants = document.getElementById("tabBtnNewRestaurants");
+    this.tabBadgeNewCount = document.getElementById("tabBadgeNewCount");
+    this.viewRoutesTab = document.getElementById("viewRoutesTab");
+    this.viewNewRestaurantsTab = document.getElementById("viewNewRestaurantsTab");
+    this.elToggleNewPins = document.getElementById("toggleNewPins");
+    this.periodButtons = document.querySelectorAll(".btn-period");
+    this.btnRefreshNewRest = document.getElementById("btnRefreshNewRest");
+    this.inputSearchNewRest = document.getElementById("inputSearchNewRest");
+    this.btnClearSearchNew = document.getElementById("btnClearSearchNew");
+    this.newRestCountLabel = document.getElementById("newRestCountLabel");
+    this.newRestaurantsList = document.getElementById("newRestaurantsList");
+    this.btnExportNewExcel = document.getElementById("btnExportNewExcel");
   }
 
   /**
@@ -157,13 +204,12 @@ class PopupController {
   initResizer() {
     const applySavedHeight = (savedHeight) => {
       const h = parseInt(savedHeight, 10);
-      if (h && h >= 400 && h <= 600) {
-        document.body.style.height = `${h}px`;
-        document.documentElement.style.height = `${h}px`;
-      } else {
-        document.body.style.height = "560px";
-        document.documentElement.style.height = "560px";
-      }
+      const targetHeight = (h && h >= 400 && h <= 600) ? h : 560;
+      document.body.style.height = `${targetHeight}px`;
+      document.documentElement.style.height = `${targetHeight}px`;
+      window.scrollTo(0, 0);
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
     };
 
     if (chrome?.storage?.local) {
@@ -209,6 +255,16 @@ class PopupController {
   }
 
   bindEvents() {
+    // Map layer: route waypoint pins (default on). Maps tabs react through chrome.storage.onChanged.
+    if (this.elToggleWaypointPins) {
+      chrome.storage?.local?.get("gce_show_waypoints").then((d) => {
+        this.elToggleWaypointPins.checked = d.gce_show_waypoints !== false;
+      });
+      this.elToggleWaypointPins.addEventListener("change", () => {
+        chrome.storage?.local?.set({ gce_show_waypoints: this.elToggleWaypointPins.checked });
+      });
+    }
+
     // Map layer: resident pins for matched places (default on). Maps tabs
     // react through chrome.storage.onChanged.
     chrome.storage?.local?.get("gce_show_matched").then((d) => {
@@ -276,7 +332,13 @@ class PopupController {
 
     // Cloud Sync & Auth
     this.elBtnSyncCloud.addEventListener("click", () => this.handleCloudSync());
-    this.elBtnOpenAuth.addEventListener("click", () => this.openAuthModal());
+    this.elBtnOpenAuth.addEventListener("click", () => {
+      if (this.isLoggedIn) {
+        this.openAuthModal();
+      } else if (this.elGateInputUsername) {
+        this.elGateInputUsername.focus();
+      }
+    });
     this.elBtnCloseAuthModal.addEventListener("click", () => this.closeAuthModal());
     if (this.elBtnCloseNavModal) {
       this.elBtnCloseNavModal.addEventListener("click", () => this.closeNavModal());
@@ -285,9 +347,80 @@ class PopupController {
       this.elBtnCancelNavModal.addEventListener("click", () => this.closeNavModal());
     }
 
+    if (this.elGateLoginForm) {
+      this.elGateLoginForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        this.handleGateLogin();
+      });
+    }
+
     this.elBtnLogin.addEventListener("click", () => this.handleLogin());
     this.elBtnLogout.addEventListener("click", () => this.handleLogout());
     this.elBtnManualSync.addEventListener("click", () => this.handleCloudSync());
+
+    // Map layer: Newly opened restaurants
+    if (this.elToggleNewPins) {
+      chrome.storage?.local?.get("gce_show_new_restaurants").then((d) => {
+        const show = d.gce_show_new_restaurants !== false;
+        this.elToggleNewPins.checked = show;
+        this.showNewPins = show;
+      });
+      this.elToggleNewPins.addEventListener("change", () => {
+        this.showNewPins = this.elToggleNewPins.checked;
+        chrome.storage?.local?.set({ gce_show_new_restaurants: this.showNewPins });
+      });
+    }
+
+    // Tabs
+    if (this.tabBtnRoutes && this.tabBtnNewRestaurants) {
+      this.tabBtnRoutes.addEventListener("click", () => this.switchTab("routes"));
+      this.tabBtnNewRestaurants.addEventListener("click", () => this.switchTab("newRestaurants"));
+    }
+
+    // Newly Opened Restaurants Period Buttons
+    this.periodButtons?.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const period = btn.dataset.period;
+        if (period && period !== this.currentNewPeriod) {
+          this.periodButtons.forEach(b => b.classList.toggle("active", b === btn));
+          this.currentNewPeriod = period;
+          this.loadNewRestaurants(period);
+        }
+      });
+    });
+
+    // Refresh New Restaurants
+    if (this.btnRefreshNewRest) {
+      this.btnRefreshNewRest.addEventListener("click", () => {
+        this.loadNewRestaurants(this.currentNewPeriod, true);
+      });
+    }
+
+    // Search New Restaurants
+    if (this.inputSearchNewRest) {
+      this.inputSearchNewRest.addEventListener("input", (e) => {
+        this.newRestSearchQuery = e.target.value.trim().toLowerCase();
+        if (this.btnClearSearchNew) {
+          this.btnClearSearchNew.style.display = this.newRestSearchQuery ? "inline-flex" : "none";
+        }
+        this.renderNewRestaurants();
+      });
+    }
+    if (this.btnClearSearchNew) {
+      this.btnClearSearchNew.addEventListener("click", () => {
+        this.newRestSearchQuery = "";
+        this.inputSearchNewRest.value = "";
+        this.btnClearSearchNew.style.display = "none";
+        this.renderNewRestaurants();
+      });
+    }
+
+    // Export New Restaurants Excel
+    if (this.btnExportNewExcel) {
+      this.btnExportNewExcel.addEventListener("click", () => {
+        this.handleExportNewRestaurantsExcel();
+      });
+    }
   }
 
   async loadState() {
@@ -306,9 +439,107 @@ class PopupController {
     this.authUser = data.authUser || "";
     this.lastSyncedAt = data.lastSyncedAt || null;
 
-    this.applyTheme(this.getActiveRoute());
+    this.updateAuthViewMode();
+
+    if (this.isLoggedIn) {
+      this.applyTheme(this.getActiveRoute());
+      this.loadNewRestaurants(this.currentNewPeriod, false);
+      await this.fetchRoutes();
+    } else {
+      this.newRestaurants = [];
+      this.updateNewRestaurantsUI();
+    }
+  }
+
+  updateAuthViewMode() {
+    this.isLoggedIn = Boolean(this.authToken);
+    window.scrollTo(0, 0);
+    document.body.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    if (this.elAuthedAppContent) this.elAuthedAppContent.scrollTop = 0;
+
+    if (this.isLoggedIn) {
+      if (this.elUnauthedGateView) this.elUnauthedGateView.style.display = "none";
+      if (this.elAuthedAppContent) this.elAuthedAppContent.style.display = "flex";
+      if (this.elBtnSyncCloud) this.elBtnSyncCloud.style.display = "inline-flex";
+      this.elAuthDot.classList.add("authed");
+      this.elAuthDot.title = `已连接账号: ${this.authUser}`;
+      if (this.elGateAlertNotice) this.elGateAlertNotice.style.display = "none";
+    } else {
+      if (this.elUnauthedGateView) this.elUnauthedGateView.style.display = "flex";
+      if (this.elAuthedAppContent) this.elAuthedAppContent.style.display = "none";
+      if (this.elBtnSyncCloud) this.elBtnSyncCloud.style.display = "none";
+      this.elAuthDot.classList.remove("authed");
+      this.elAuthDot.title = "未登录";
+      this.closeAuthModal();
+      this.closeNavModal();
+      this.newRestaurants = [];
+      this.updateNewRestaurantsUI();
+    }
     this.updateAuthStatusUI();
-    await this.fetchRoutes();
+  }
+
+  handleSessionExpired(reason = "登录态已失效，请重新登录") {
+    this.authToken = "";
+    this.authUser = "";
+    this.isLoggedIn = false;
+    this.newRestaurants = [];
+    if (chrome?.storage?.local) {
+      chrome.storage.local.remove([
+        "authToken",
+        "authUser",
+        "gce_new_restaurants_cache",
+        "gce_new_restaurants_period",
+        "gce_new_restaurants_updated"
+      ]);
+    }
+    this.updateAuthViewMode();
+    this.updateNewRestaurantsUI();
+    if (this.elGateAlertNotice && this.elGateAlertText) {
+      this.elGateAlertText.textContent = reason;
+      this.elGateAlertNotice.style.display = "flex";
+    }
+  }
+
+  async handleGateLogin() {
+    const user = this.elGateInputUsername ? this.elGateInputUsername.value.trim() : "";
+    const pass = this.elGateInputPassword ? this.elGateInputPassword.value.trim() : "";
+
+    if (!user || !pass) {
+      this.showGateError("请输入用户名与密码");
+      return;
+    }
+
+    if (this.elBtnGateLogin) this.elBtnGateLogin.disabled = true;
+    if (this.elGateErrorMsg) this.elGateErrorMsg.style.display = "none";
+
+    try {
+      const res = await GreenOilApi.login(user, pass);
+      if (res && res.success && res.token) {
+        this.authToken = res.token;
+        this.authUser = res.user?.username || user;
+        this.isLoggedIn = true;
+        await this.saveState(false);
+        this.updateAuthViewMode();
+
+        this.applyTheme(this.getActiveRoute());
+        await this.fetchRoutes();
+        this.loadNewRestaurants(this.currentNewPeriod, true);
+      } else {
+        this.showGateError(res?.message || res?.error || "登录失败，请检查账号密码");
+      }
+    } catch (e) {
+      this.showGateError("网络异常：" + e.message);
+    } finally {
+      if (this.elBtnGateLogin) this.elBtnGateLogin.disabled = false;
+    }
+  }
+
+  showGateError(msg) {
+    if (this.elGateErrorMsg) {
+      this.elGateErrorMsg.textContent = msg;
+      this.elGateErrorMsg.style.display = "block";
+    }
   }
 
   /**
@@ -317,11 +548,16 @@ class PopupController {
    * placeholder can never be written over the cloud.
    */
   async fetchRoutes() {
+    if (!this.isLoggedIn) return;
     this.routesStatus = "loading";
     this.render();
     try {
       const resp = await chrome.runtime.sendMessage({ action: "getRoutes" });
       if (!resp?.success || !resp.routes) {
+        if (resp?.unauthorized) {
+          this.handleSessionExpired("登录态已失效，请重新登录以同步路线");
+          return;
+        }
         const err = new Error(resp?.error || "云端路线读取失败");
         err.unauthorized = Boolean(resp?.unauthorized);
         throw err;
@@ -333,6 +569,10 @@ class PopupController {
       this.lastSyncedAt = new Date().toISOString();
       chrome.storage.local.set({ lastSyncedAt: this.lastSyncedAt });
     } catch (e) {
+      if (e.unauthorized) {
+        this.handleSessionExpired("登录态已失效，请重新登录");
+        return;
+      }
       this.colorRoutes = JSON.parse(JSON.stringify(COLOR_ROUTES_DEF));
       this.routesStatus = "error";
       this.routesError = e.message || String(e);
@@ -353,6 +593,10 @@ class PopupController {
       });
     }
     if (!pushRoutes) return;
+    if (!this.isLoggedIn) {
+      this.handleSessionExpired("未登录状态下无法保存路线，请先登录");
+      return;
+    }
     if (this.routesStatus !== "ready") {
       alert("云端途径点尚未读取成功，本次修改未保存。");
       await this.fetchRoutes();
@@ -362,11 +606,21 @@ class PopupController {
     // Lists go straight to the API (the background serializes the writes).
     try {
       const resp = await chrome.runtime.sendMessage({ action: "saveRoutes", routes: this.colorRoutes });
-      if (!resp?.success) throw new Error(resp?.error || "云端路线保存失败");
+      if (!resp?.success) {
+        if (resp?.unauthorized) {
+          this.handleSessionExpired("登录态已失效，保存失败，请重新登录");
+          return;
+        }
+        throw new Error(resp?.error || "云端路线保存失败");
+      }
       this.lastSyncedAt = new Date().toISOString();
       chrome.storage.local.set({ lastSyncedAt: this.lastSyncedAt });
       this.updateAuthStatusUI();
     } catch (e) {
+      if (e.unauthorized) {
+        this.handleSessionExpired("登录态已失效，保存失败，请重新登录");
+        return;
+      }
       alert(`途径点保存到云端失败：${e.message || e}`);
       await this.fetchRoutes();
     }
@@ -1111,8 +1365,8 @@ class PopupController {
 
   // Re-read the lists from the cloud API
   async handleCloudSync() {
-    if (!this.authToken || this.routesNeedLogin) {
-      this.openAuthModal();
+    if (!this.authToken || !this.isLoggedIn || this.routesNeedLogin) {
+      this.handleSessionExpired("请先登录 Green Oil 账号后再进行云端同步");
       return;
     }
     this.elBtnSyncCloud.disabled = true;
@@ -1168,10 +1422,13 @@ class PopupController {
       if (res && res.success && res.token) {
         this.authToken = res.token;
         this.authUser = res.user?.username || user;
+        this.isLoggedIn = true;
         await this.saveState(false);
+        this.updateAuthViewMode();
         this.updateAuthStatusUI();
 
         await this.fetchRoutes();
+        this.loadNewRestaurants(this.currentNewPeriod, true);
 
         this.closeAuthModal();
       } else {
@@ -1187,14 +1444,313 @@ class PopupController {
   async handleLogout() {
     this.authToken = "";
     this.authUser = "";
-    await this.saveState(false);
-    this.updateAuthStatusUI();
-    await this.fetchRoutes();
+    this.isLoggedIn = false;
+    this.newRestaurants = [];
+    if (chrome?.storage?.local) {
+      await chrome.storage.local.remove([
+        "authToken",
+        "authUser",
+        "gce_new_restaurants_cache",
+        "gce_new_restaurants_period",
+        "gce_new_restaurants_updated"
+      ]);
+    }
+    this.closeAuthModal();
+    this.updateAuthViewMode();
+    this.updateNewRestaurantsUI();
   }
 
   showAuthError(msg) {
     this.elAuthErrorMsg.textContent = msg;
     this.elAuthErrorMsg.style.display = "block";
+  }
+
+  /* ===================================================
+     Newly Opened Restaurants (Toronto DineSafe) Methods
+     =================================================== */
+
+  switchTab(tab) {
+    this.activeTab = tab;
+    window.scrollTo(0, 0);
+    document.body.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    if (this.elAuthedAppContent) this.elAuthedAppContent.scrollTop = 0;
+
+    if (tab === "routes") {
+      this.tabBtnRoutes?.classList.add("active");
+      this.tabBtnRoutes?.setAttribute("aria-selected", "true");
+      this.tabBtnNewRestaurants?.classList.remove("active");
+      this.tabBtnNewRestaurants?.setAttribute("aria-selected", "false");
+      if (this.viewRoutesTab) this.viewRoutesTab.style.display = "flex";
+      if (this.viewNewRestaurantsTab) this.viewNewRestaurantsTab.style.display = "none";
+    } else {
+      this.tabBtnNewRestaurants?.classList.add("active");
+      this.tabBtnNewRestaurants?.setAttribute("aria-selected", "true");
+      this.tabBtnRoutes?.classList.remove("active");
+      this.tabBtnRoutes?.setAttribute("aria-selected", "false");
+      if (this.viewRoutesTab) this.viewRoutesTab.style.display = "none";
+      if (this.viewNewRestaurantsTab) this.viewNewRestaurantsTab.style.display = "flex";
+      if (this.newRestaurants.length === 0) {
+        this.loadNewRestaurants(this.currentNewPeriod);
+      }
+    }
+  }
+
+  async loadNewRestaurants(period = this.currentNewPeriod, forceRefresh = false) {
+    if (!this.isLoggedIn || !this.authToken) {
+      this.newRestaurants = [];
+      this.updateNewRestaurantsUI();
+      return;
+    }
+
+    if (this.newRestCountLabel) {
+      this.newRestCountLabel.textContent = "正在获取新开餐馆数据...";
+    }
+    if (this.btnRefreshNewRest) {
+      this.btnRefreshNewRest.classList.add("spinning");
+    }
+
+    try {
+      const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+      if (!forceRefresh) {
+        const stored = await chrome.storage?.local?.get([
+          "gce_new_restaurants_cache",
+          "gce_new_restaurants_period",
+          "gce_new_restaurants_updated"
+        ]);
+        if (!this.isLoggedIn || !this.authToken) {
+          this.newRestaurants = [];
+          this.updateNewRestaurantsUI();
+          return;
+        }
+        const isCacheValid = Array.isArray(stored?.gce_new_restaurants_cache) &&
+          stored?.gce_new_restaurants_period === period &&
+          typeof stored?.gce_new_restaurants_updated === "number" &&
+          (Date.now() - stored.gce_new_restaurants_updated < CACHE_TTL_MS);
+
+        if (isCacheValid) {
+          this.newRestaurants = stored.gce_new_restaurants_cache;
+          this.updateNewRestaurantsUI();
+          return;
+        }
+      }
+
+      const res = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: "getNewlyOpenedRestaurants", period }, (resp) => {
+          resolve(resp || {});
+        });
+      });
+
+      if (!this.isLoggedIn || !this.authToken) {
+        this.newRestaurants = [];
+        this.updateNewRestaurantsUI();
+        return;
+      }
+
+      if (res?.unauthorized) {
+        this.handleSessionExpired("登录态已失效，无法获取新开餐馆数据");
+        return;
+      }
+
+      if (res && res.success && Array.isArray(res.data)) {
+        this.newRestaurants = res.data;
+      } else if (res && res.error) {
+        console.warn("[GreenOil] getNewlyOpenedRestaurants warning:", res.error);
+      }
+    } catch (err) {
+      console.error("[GreenOil] Failed to load new restaurants:", err);
+    } finally {
+      if (this.btnRefreshNewRest) {
+        this.btnRefreshNewRest.classList.remove("spinning");
+      }
+      this.updateNewRestaurantsUI();
+    }
+  }
+
+  updateNewRestaurantsUI() {
+    const totalCount = this.newRestaurants.length;
+    if (this.tabBadgeNewCount) {
+      this.tabBadgeNewCount.textContent = String(totalCount);
+      this.tabBadgeNewCount.style.display = totalCount > 0 ? "inline-flex" : "none";
+    }
+
+    const periodLabels = { day: "最近 1 天", week: "最近 1 周", month: "最近 1 个月" };
+    const periodName = periodLabels[this.currentNewPeriod] || "选定周期";
+
+    if (this.newRestCountLabel) {
+      this.newRestCountLabel.textContent = `${periodName}共 ${totalCount} 家新开餐馆`;
+    }
+
+    this.renderNewRestaurants();
+  }
+
+  getFilteredNewRestaurants() {
+    if (!this.newRestSearchQuery) return this.newRestaurants;
+    const q = this.newRestSearchQuery;
+    return this.newRestaurants.filter(r =>
+      (r.name && r.name.toLowerCase().includes(q)) ||
+      (r.address && r.address.toLowerCase().includes(q))
+    );
+  }
+
+  renderNewRestaurants() {
+    if (!this.newRestaurantsList) return;
+    const list = this.getFilteredNewRestaurants();
+
+    if (list.length === 0) {
+      this.newRestaurantsList.innerHTML = `
+        <div class="new-rest-empty">
+          ${SVG_EMPTY}
+          <div>暂无新开餐馆数据</div>
+        </div>
+      `;
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    list.forEach((r, idx) => {
+      const card = document.createElement("div");
+      card.className = "new-rest-card";
+
+      const dateText = r.estimatedOpeningDate || r.firstInspectionDate || "未知";
+      const coordsText = (r.latitude != null && r.longitude != null)
+        ? `${Number(r.latitude).toFixed(4)}, ${Number(r.longitude).toFixed(4)}`
+        : "无坐标";
+
+      card.innerHTML = `
+        <div class="new-rest-card-header">
+          <div class="new-rest-name">${this.escapeHtml(r.name || "未命名餐馆")}</div>
+          <div class="new-rest-date-badge" title="首次卫生检查时间">
+            ${SVG_CALENDAR}
+            <span>预计开业: ${this.escapeHtml(dateText)}</span>
+          </div>
+        </div>
+        <div class="new-rest-address-row">
+          <svg class="new-rest-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+          <span>${this.escapeHtml(r.address || "无详细地址")}</span>
+        </div>
+        <div class="new-rest-footer">
+          <div class="new-rest-coords">${coordsText}</div>
+          <div class="new-rest-actions">
+            <button class="btn-rest-action btn-rest-locate" title="在 Google Maps 上定位该餐馆">
+              ${SVG_TARGET}
+              <span>定位</span>
+            </button>
+            <button class="btn-rest-action btn-rest-primary btn-rest-add" title="加入当前路线">
+              ${SVG_PLUS}
+              <span>加入路线</span>
+            </button>
+          </div>
+        </div>
+      `;
+
+      // Locate on map
+      card.querySelector(".btn-rest-locate").addEventListener("click", () => {
+        this.centerRestaurantOnMap(r);
+      });
+
+      // Add to route
+      card.querySelector(".btn-rest-add").addEventListener("click", () => {
+        this.addRestaurantToRoute(r);
+      });
+
+      frag.appendChild(card);
+    });
+
+    this.newRestaurantsList.replaceChildren(frag);
+  }
+
+  async centerRestaurantOnMap(r) {
+    if (r.latitude == null || r.longitude == null) {
+      alert("该餐馆缺少经纬度坐标，无法在地图上定位。");
+      return;
+    }
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: "centerMapCoordinates",
+        latitude: r.latitude,
+        longitude: r.longitude,
+        name: r.name
+      }).catch(() => {});
+    }
+  }
+
+  async addRestaurantToRoute(r) {
+    if (!this.isLoggedIn || !this.authToken) {
+      alert("请先登录 Green Oil 账号后再添加途径点。");
+      return;
+    }
+    const activeRoute = this.getActiveRoute();
+    if (!activeRoute) return;
+
+    const waypoint = {
+      name: r.name,
+      address: r.address,
+      latitude: r.latitude != null ? parseFloat(r.latitude) : null,
+      longitude: r.longitude != null ? parseFloat(r.longitude) : null,
+      openingHours: "",
+      phone: r.phone || "",
+      placeId: r.id || "",
+      mapsUrl: (r.latitude && r.longitude) ? `https://www.google.com/maps/search/?api=1&query=${r.latitude},${r.longitude}` : ""
+    };
+
+    activeRoute.waypoints = activeRoute.waypoints || [];
+    activeRoute.waypoints.push(waypoint);
+    await this.saveState();
+    this.render();
+    alert(`已将 "${r.name}" 添加至当前【${activeRoute.name}】！`);
+  }
+
+  handleExportNewRestaurantsExcel() {
+    if (!this.isLoggedIn || !this.authToken) {
+      alert("请先登录 Green Oil 账号后再导出数据。");
+      return;
+    }
+    const list = this.getFilteredNewRestaurants();
+    if (list.length === 0) {
+      alert("当前没有可导出的新开餐馆数据。");
+      return;
+    }
+
+    const xlsxLib = window.XLSX;
+    if (!xlsxLib) {
+      alert("Excel 导出组件尚未加载完成，请稍后重试。");
+      return;
+    }
+
+    const periodLabels = { day: "最近1天", week: "最近1周", month: "最近1个月" };
+    const periodLabel = periodLabels[this.currentNewPeriod] || "新开业";
+
+    const exportRows = list.map((r, idx) => ({
+      "序号": idx + 1,
+      "餐厅名称": r.name || "",
+      "地址": r.address || "",
+      "预计开业时间(首次卫生检查时间)": r.estimatedOpeningDate || r.firstInspectionDate || "",
+      "纬度": r.latitude != null ? r.latitude : "",
+      "经度": r.longitude != null ? r.longitude : "",
+      "电话": r.phone || "",
+      "检查状态": r.status || "Pass"
+    }));
+
+    const ws = xlsxLib.utils.json_to_sheet(exportRows);
+    ws["!cols"] = [
+      { wch: 8 },   // 序号
+      { wch: 36 },  // 餐厅名称
+      { wch: 46 },  // 地址
+      { wch: 30 },  // 预计开业时间
+      { wch: 15 },  // 纬度
+      { wch: 15 },  // 经度
+      { wch: 16 },  // 电话
+      { wch: 14 }   // 检查状态
+    ];
+
+    const wb = xlsxLib.utils.book_new();
+    xlsxLib.utils.book_append_sheet(wb, ws, "最近新开餐馆");
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `多伦多新开业餐馆_${periodLabel}_${dateStr}.xlsx`;
+    xlsxLib.writeFile(wb, filename);
   }
 }
 

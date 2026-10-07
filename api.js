@@ -41,6 +41,9 @@ export const GreenOilApi = {
           "Authorization": `Bearer ${token}`
         }
       });
+      if (resp.status === 401) {
+        return { authenticated: false, unauthorized: true, error: "Unauthorized" };
+      }
       return await resp.json();
     } catch (e) {
       console.warn("Auth check failed:", e);
@@ -60,6 +63,9 @@ export const GreenOilApi = {
         method: "GET",
         headers
       });
+      if (resp.status === 401) {
+        return { success: false, unauthorized: true, error: "Unauthorized" };
+      }
       return await resp.json();
     } catch (e) {
       console.warn("getMapRoutes failed:", e);
@@ -80,6 +86,9 @@ export const GreenOilApi = {
         headers,
         body: JSON.stringify({ groups, activeGroupId, origin })
       });
+      if (resp.status === 401) {
+        return { success: false, unauthorized: true, error: "Unauthorized" };
+      }
       return await resp.json();
     } catch (e) {
       console.warn("saveMapRoutes failed:", e);
@@ -99,11 +108,44 @@ export const GreenOilApi = {
         method: "GET",
         headers
       });
+      if (resp.status === 401) {
+        return { success: false, unauthorized: true, error: "Unauthorized" };
+      }
       return await resp.json();
     } catch (e) {
       console.warn("getJevKey failed:", e);
       return { success: false, error: e.message || "获取 JEV Key 失败" };
     }
+  },
+
+  /**
+   * Fetch newly opened restaurants (DineSafe data, requires authentication)
+   * @param {string} token
+   * @param {'day'|'week'|'month'} period
+   * @param {object} options
+   */
+  async getNewlyOpenedRestaurants(token, period = "week", options = {}) {
+    try {
+      if (!token) {
+        return { success: false, unauthorized: true, error: "未登录，请先登录 Green Oil 账号" };
+      }
+      const headers = { "Content-Type": "application/json" };
+      headers["Authorization"] = `Bearer ${token}`;
+
+      const params = new URLSearchParams({ period, ...options });
+      const resp = await fetch(`${this.getWorkerUrl()}/api/new-restaurants?${params}`, {
+        method: "GET",
+        headers
+      });
+      if (resp.status === 401) {
+        return { success: false, unauthorized: true, error: "Unauthorized" };
+      }
+      return await resp.json();
+    } catch (e) {
+      console.warn("getNewlyOpenedRestaurants failed:", e);
+      return { success: false, error: e.message || "获取新开餐馆失败" };
+    }
   }
 };
+
 
