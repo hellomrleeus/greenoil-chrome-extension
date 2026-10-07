@@ -82,6 +82,8 @@ const SVG_PIN_MINI = `<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c
 const SVG_CALENDAR = `<svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>`;
 const SVG_PLUS = `<svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`;
 const SVG_TARGET = `<svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>`;
+const SVG_CHECK = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+const SVG_COPY = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
 
 class PopupController {
   constructor() {
@@ -1625,9 +1627,10 @@ class PopupController {
             <span>预计开业: ${this.escapeHtml(dateText)}</span>
           </div>
         </div>
-        <div class="new-rest-address-row">
+        <div class="new-rest-address-row"${r.address ? ' title="点击复制地址" role="button" tabindex="0"' : ""}>
           <svg class="new-rest-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-          <span>${this.escapeHtml(r.address || "无详细地址")}</span>
+          <span class="new-rest-address-text">${this.escapeHtml(r.address || "无详细地址")}</span>
+          ${r.address ? `<span class="new-rest-copy-btn" title="点击复制地址" aria-label="点击复制地址">${SVG_COPY}</span>` : ""}
         </div>
         <div class="new-rest-footer">
           <div class="new-rest-coords">${coordsText}</div>
@@ -1643,6 +1646,35 @@ class PopupController {
           </div>
         </div>
       `;
+
+      // Copy address
+      const addrRow = card.querySelector(".new-rest-address-row");
+      if (addrRow && r.address) {
+        addrRow.addEventListener("click", async () => {
+          const ok = await this.copyToClipboard(r.address);
+          if (ok) {
+            addrRow.classList.add("is-copied");
+            const copyBtn = addrRow.querySelector(".new-rest-copy-btn");
+            if (copyBtn) {
+              copyBtn.innerHTML = SVG_CHECK;
+              copyBtn.title = "已复制";
+            }
+            setTimeout(() => {
+              addrRow.classList.remove("is-copied");
+              if (copyBtn) {
+                copyBtn.innerHTML = SVG_COPY;
+                copyBtn.title = "点击复制地址";
+              }
+            }, 1800);
+          }
+        });
+        addrRow.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            addrRow.click();
+          }
+        });
+      }
 
       // Locate on map
       card.querySelector(".btn-rest-locate").addEventListener("click", () => {
@@ -1751,6 +1783,32 @@ class PopupController {
     const dateStr = new Date().toISOString().slice(0, 10);
     const filename = `多伦多新开业餐馆_${periodLabel}_${dateStr}.xlsx`;
     xlsxLib.writeFile(wb, filename);
+  }
+
+  async copyToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {}
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "-9999px";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return ok;
+    } catch (_) {
+      return false;
+    }
   }
 }
 

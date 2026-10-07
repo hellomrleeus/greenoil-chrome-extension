@@ -734,10 +734,71 @@ html[data-greenoil-imagery] #greenoil-pins-control-bar {
 }
 
 .greenoil-new-tooltip-address {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
   font-size: 11px !important;
   color: #4b5563 !important;
   margin-bottom: 6px !important;
+  padding: 3px 6px !important;
+  margin-left: -6px !important;
+  margin-right: -6px !important;
+  border-radius: 4px !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
   word-break: break-word;
+}
+
+.greenoil-new-tooltip-address[role="button"] {
+  cursor: pointer !important;
+}
+
+.greenoil-new-tooltip-address[role="button"]:hover {
+  background-color: #f3f4f6 !important;
+  color: #111827 !important;
+}
+
+.greenoil-new-tooltip-address:focus-visible {
+  outline: 2px solid #10b981 !important;
+  outline-offset: 1px !important;
+}
+
+.greenoil-new-tooltip-address.is-copied {
+  background-color: #ecfdf5 !important;
+  color: #065f46 !important;
+}
+
+.greenoil-new-tooltip-address-text {
+  flex: 1 !important;
+  min-width: 0 !important;
+  word-break: break-word !important;
+}
+
+.greenoil-new-tooltip-copy-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 16px !important;
+  height: 16px !important;
+  flex-shrink: 0 !important;
+  color: #9ca3af !important;
+  margin-top: 1px !important;
+  transition: color 0.15s ease, transform 0.15s ease !important;
+}
+
+.greenoil-new-tooltip-address:hover .greenoil-new-tooltip-copy-btn {
+  color: #4b5563 !important;
+}
+
+.greenoil-new-tooltip-address.is-copied .greenoil-new-tooltip-copy-btn {
+  color: #059669 !important;
+}
+
+.greenoil-new-tooltip-copy-btn svg {
+  width: 13px !important;
+  height: 13px !important;
+  fill: currentColor !important;
+  pointer-events: none !important;
 }
 
 .greenoil-new-tooltip-meta {

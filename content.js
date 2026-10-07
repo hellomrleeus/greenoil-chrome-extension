@@ -267,6 +267,33 @@ if (window.__greenoil_injected__) {
   const SVG_CHIP_BOX = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M4 4h16v4H4V4zm1 6h14v10H5V10z"/></svg>`;
   const SVG_CHIP_DRUM = `<svg width="12" height="12" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 3.79 2 6v12c0 2.21 4.48 4 10 4s10-1.79 10-4V6c0-2.21-4.48-4-10-4zm0 2c4.41 0 8 1.34 8 2s-3.59 2-8 2-8-1.34-8-2 3.59-2 8-2z"/></svg>`;
   const SVG_TRASH = `<svg viewBox="0 0 24 24" width="13" height="13"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+  const SVG_COPY = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+
+  async function copyToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {}
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "-9999px";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
 
   // State for native Google Maps marker coloring
   let currentRouteWaypoints = [];
@@ -427,7 +454,10 @@ if (window.__greenoil_injected__) {
           </button>
         </div>
         <div class="greenoil-new-tooltip-name">${escapeHtml(rest.name || "")}</div>
-        <div class="greenoil-new-tooltip-address">${escapeHtml(rest.address || "")}</div>
+        <div class="greenoil-new-tooltip-address"${rest.address ? ' title="点击复制地址" role="button" tabindex="0"' : ""}>
+          <span class="greenoil-new-tooltip-address-text">${escapeHtml(rest.address || "")}</span>
+          ${rest.address ? `<span class="greenoil-new-tooltip-copy-btn" title="点击复制地址" aria-label="点击复制地址">${SVG_COPY}</span>` : ""}
+        </div>
         ${dateText ? `<div class="greenoil-new-tooltip-meta">预计开业: ${escapeHtml(dateText)}</div>` : ""}
         <div class="greenoil-new-tooltip-footer">
           <button type="button" class="greenoil-new-tooltip-add-btn${inRoute ? " is-added" : (!isLoggedIn ? " is-unauthed" : "")}"
@@ -452,6 +482,40 @@ if (window.__greenoil_injected__) {
         e.preventDefault();
         pin.classList.remove("active");
         pin.classList.add("dismissed");
+      });
+    }
+
+    const addressEl = pin.querySelector(".greenoil-new-tooltip-address");
+    if (addressEl && rest.address) {
+      addressEl.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const success = await copyToClipboard(rest.address);
+        if (success) {
+          addressEl.classList.add("is-copied");
+          const copyBtn = addressEl.querySelector(".greenoil-new-tooltip-copy-btn");
+          if (copyBtn) {
+            copyBtn.innerHTML = SVG_CHECK;
+            copyBtn.title = "已复制";
+          }
+          showToast("已复制地址", rest.address);
+          setTimeout(() => {
+            addressEl.classList.remove("is-copied");
+            if (copyBtn) {
+              copyBtn.innerHTML = SVG_COPY;
+              copyBtn.title = "点击复制地址";
+            }
+          }, 2000);
+        } else {
+          showToast("复制失败", "无法访问剪贴板，请手动复制", false);
+        }
+      });
+
+      addressEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          addressEl.click();
+        }
       });
     }
 

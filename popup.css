@@ -1324,6 +1324,56 @@ body {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.4;
+  padding: 3px 5px;
+  margin: -3px -5px;
+  border-radius: 4px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.new-rest-address-row[role="button"] {
+  cursor: pointer;
+}
+
+.new-rest-address-row[role="button"]:hover {
+  background: var(--bg-hover, #f3f4f6);
+  color: var(--text-main, #111827);
+}
+
+.new-rest-address-row.is-copied {
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.new-rest-address-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.new-rest-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted, #9ca3af);
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: color 0.15s ease;
+}
+
+.new-rest-address-row:hover .new-rest-copy-btn {
+  color: var(--text-secondary, #4b5563);
+}
+
+.new-rest-address-row.is-copied .new-rest-copy-btn {
+  color: #059669;
+}
+
+.new-rest-copy-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
 }
 
 .new-rest-icon {
