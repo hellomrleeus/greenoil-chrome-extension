@@ -1579,3 +1579,32 @@ body {
 }
 
 
+
+/* Import Addresses Modal */
+.import-textarea {
+  height: auto;
+  min-height: 120px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.import-status {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-main);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.import-status.is-error {
+  background-color: var(--danger-light);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
