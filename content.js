@@ -453,7 +453,10 @@ if (window.__greenoil_injected__) {
             ${SVG_CLOSE}
           </button>
         </div>
-        <div class="greenoil-new-tooltip-name">${escapeHtml(rest.name || "")}</div>
+        <div class="greenoil-new-tooltip-name"${rest.name ? ' title="点击复制店名" role="button" tabindex="0"' : ""}>
+          <span class="greenoil-new-tooltip-name-text">${escapeHtml(rest.name || "")}</span>
+          ${rest.name ? `<span class="greenoil-new-tooltip-copy-btn" title="点击复制店名" aria-label="点击复制店名">${SVG_COPY}</span>` : ""}
+        </div>
         <div class="greenoil-new-tooltip-address"${rest.address ? ' title="点击复制地址" role="button" tabindex="0"' : ""}>
           <span class="greenoil-new-tooltip-address-text">${escapeHtml(rest.address || "")}</span>
           ${rest.address ? `<span class="greenoil-new-tooltip-copy-btn" title="点击复制地址" aria-label="点击复制地址">${SVG_COPY}</span>` : ""}
@@ -485,25 +488,26 @@ if (window.__greenoil_injected__) {
       });
     }
 
-    const addressEl = pin.querySelector(".greenoil-new-tooltip-address");
-    if (addressEl && rest.address) {
-      addressEl.addEventListener("click", async (e) => {
+    const bindCopy = (el, text, label) => {
+      if (!el || !text) return;
+      const hint = `点击复制${label}`;
+      el.addEventListener("click", async (e) => {
         e.stopPropagation();
         e.preventDefault();
-        const success = await copyToClipboard(rest.address);
+        const success = await copyToClipboard(text);
         if (success) {
-          addressEl.classList.add("is-copied");
-          const copyBtn = addressEl.querySelector(".greenoil-new-tooltip-copy-btn");
+          el.classList.add("is-copied");
+          const copyBtn = el.querySelector(".greenoil-new-tooltip-copy-btn");
           if (copyBtn) {
             copyBtn.innerHTML = SVG_CHECK;
             copyBtn.title = "已复制";
           }
-          showToast("已复制地址", rest.address);
+          showToast(`已复制${label}`, text);
           setTimeout(() => {
-            addressEl.classList.remove("is-copied");
+            el.classList.remove("is-copied");
             if (copyBtn) {
               copyBtn.innerHTML = SVG_COPY;
-              copyBtn.title = "点击复制地址";
+              copyBtn.title = hint;
             }
           }, 2000);
         } else {
@@ -511,13 +515,16 @@ if (window.__greenoil_injected__) {
         }
       });
 
-      addressEl.addEventListener("keydown", (e) => {
+      el.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          addressEl.click();
+          el.click();
         }
       });
-    }
+    };
+
+    bindCopy(pin.querySelector(".greenoil-new-tooltip-name"), rest.name, "店名");
+    bindCopy(pin.querySelector(".greenoil-new-tooltip-address"), rest.address, "地址");
 
     pin.addEventListener("mouseleave", () => {
       pin.classList.remove("dismissed");

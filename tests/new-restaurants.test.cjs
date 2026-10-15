@@ -201,7 +201,7 @@ test("New restaurant pin tooltip has close button and single plus sign without d
   assert.ok(contentJs.includes("<span>加入路线</span>") || contentJs.includes('"加入路线"'), "Button should say '加入路线'");
 });
 
-test("New restaurant address in floating tooltip and popup is clickable to copy", () => {
+test("New restaurant name and address in floating tooltip, and address in popup, are clickable to copy", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const contentJs = fs.readFileSync(path.resolve(__dirname, "../content.js"), "utf8");
@@ -213,7 +213,12 @@ test("New restaurant address in floating tooltip and popup is clickable to copy"
   assert.ok(contentJs.includes("greenoil-new-tooltip-address"), "Tooltip must include address class");
   assert.ok(contentJs.includes("greenoil-new-tooltip-copy-btn"), "Tooltip must include copy button element");
   assert.ok(contentJs.includes("copyToClipboard"), "Content script must have copyToClipboard helper");
-  assert.ok(contentJs.includes("showToast(\"已复制地址\""), "Content script should show toast on copy");
+  assert.ok(contentJs.includes('bindCopy(pin.querySelector(".greenoil-new-tooltip-address"), rest.address, "地址")'), "Address should be click-to-copy");
+  assert.ok(contentJs.includes('bindCopy(pin.querySelector(".greenoil-new-tooltip-name"), rest.name, "店名")'), "Name should be click-to-copy");
+  assert.ok(contentJs.includes("showToast(`已复制${label}`"), "Content script should show toast on copy");
+  assert.ok(contentJs.includes('title="点击复制店名" role="button" tabindex="0"'), "Tooltip name must be a focusable copy button");
+  assert.ok(contentCss.includes(".greenoil-new-tooltip-name[role=\"button\"]"), "CSS must style clickable name pointer");
+  assert.ok(contentCss.includes(".greenoil-new-tooltip-name.is-copied"), "CSS must style copied name state");
   assert.ok(contentCss.includes(".greenoil-new-tooltip-address"), "CSS must style tooltip address");
   assert.ok(contentCss.includes(".greenoil-new-tooltip-address[role=\"button\"]"), "CSS must style clickable address pointer");
   assert.ok(contentCss.includes(".greenoil-new-tooltip-address.is-copied"), "CSS must style copied feedback state");
