@@ -170,6 +170,15 @@ class PopupController {
     this.elNavLegsList = document.getElementById("navLegsList");
     this.elBtnCancelNavModal = document.getElementById("btnCancelNavModal");
 
+    // Import Addresses Modal
+    this.elBtnImportAddresses = document.getElementById("btnImportAddresses");
+    this.elImportModal = document.getElementById("importModal");
+    this.elImportAddressInput = document.getElementById("importAddressInput");
+    this.elImportStatus = document.getElementById("importStatus");
+    this.elBtnConfirmImport = document.getElementById("btnConfirmImport");
+    this.elBtnCancelImportModal = document.getElementById("btnCancelImportModal");
+    this.elBtnCloseImportModal = document.getElementById("btnCloseImportModal");
+
     // Auth Modal
     this.elAuthModal = document.getElementById("authModal");
     this.elBtnCloseAuthModal = document.getElementById("btnCloseAuthModal");
@@ -286,6 +295,10 @@ class PopupController {
     // Route Toolbar
     this.elBtnOptimizeRoute.addEventListener("click", () => this.handleOptimizeRoute());
     this.elBtnClearRoute.addEventListener("click", () => this.handleClearRoute());
+    this.elBtnImportAddresses.addEventListener("click", () => this.openImportModal());
+    this.elBtnConfirmImport.addEventListener("click", () => this.handleImportAddresses());
+    this.elBtnCancelImportModal.addEventListener("click", () => this.closeImportModal());
+    this.elBtnCloseImportModal.addEventListener("click", () => this.closeImportModal());
 
     // Origin Address
     this.elInputOrigin.addEventListener("change", () => {
@@ -1322,6 +1335,100 @@ class PopupController {
 
   closeNavModal() {
     this.elNavModal.style.display = "none";
+  }
+
+  /**
+   * "导入地址": paste addresses, look them up in an open Google Maps tab,
+   * add the found places to the active route.
+   */
+  openImportModal() {
+    if (!this.isLoggedIn || !this.authToken) {
+      alert("请先登录 Green Oil 账号后再添加途径点。");
+      return;
+    }
+    this.setImportStatus("");
+    this.elImportModal.style.display = "flex";
+    this.elImportAddressInput.focus();
+  }
+
+  closeImportModal() {
+    if (this.importing) return;
+    this.elImportModal.style.display = "none";
+  }
+
+  setImportStatus(text, isError = false) {
+    this.elImportStatus.textContent = text;
+    this.elImportStatus.classList.toggle("is-error", isError);
+    this.elImportStatus.style.display = text ? "block" : "none";
+  }
+
+  async findMapsTab() {
+    const urls = [
+      "https://*.google.com/maps*", "https://*.google.ca/maps*", "https://*.google.co.uk/maps*",
+      "https://*.google.com.hk/maps*", "https://*.google.com.tw/maps*", "https://*.google.co.jp/maps*"
+    ];
+    const tabs = await chrome.tabs.query({ url: urls });
+    return tabs.find(t => t.active) || tabs[0] || null;
+  }
+
+  async handleImportAddresses() {
+    if (this.importing) return;
+    const { MAX_LINES, parseAddressLines, planImport } = window.GreenOilAddressImport;
+    const lines = parseAddressLines(this.elImportAddressInput.value);
+    if (lines.length === 0) {
+      this.setImportStatus("请至少输入一个地址。", true);
+      return;
+    }
+    if (lines.length > MAX_LINES) {
+      this.setImportStatus(`一次最多导入 ${MAX_LINES} 个地址，当前 ${lines.length} 个。`, true);
+      return;
+    }
+
+    const tab = await this.findMapsTab();
+    if (!tab) {
+      this.setImportStatus("请先在浏览器中打开 Google Maps（google.com/maps），再导入地址。", true);
+      return;
+    }
+
+    this.importing = true;
+    this.elBtnConfirmImport.disabled = true;
+    this.setImportStatus(`正在 Google Maps 中查找 ${lines.length} 个地址...`);
+    try {
+      let resp;
+      try {
+        resp = await chrome.tabs.sendMessage(tab.id, { action: "lookupAddresses", queries: lines });
+      } catch (_) {
+        throw new Error("无法连接 Google Maps 页面，请刷新该页面后重试。");
+      }
+      if (!resp?.success) throw new Error(resp?.error || "地址查询失败");
+
+      const plan = planImport(resp.results, this.colorRoutes);
+      const activeRoute = this.getActiveRoute();
+      if (plan.add.length > 0) {
+        activeRoute.waypoints = activeRoute.waypoints || [];
+        activeRoute.waypoints.push(...plan.add);
+        await this.saveState();
+        this.render();
+      }
+
+      const report = [`已加入【${activeRoute.name}】：${plan.add.length} 个`];
+      if (plan.duplicates.length) {
+        report.push(`已在路线中，跳过 ${plan.duplicates.length} 个：` +
+          plan.duplicates.map(d => d.routeName ? `${d.name}（${d.routeName}）` : d.name).join("、"));
+      }
+      const unresolved = [...plan.notFound, ...plan.failed.map(f => f.query)];
+      if (unresolved.length) {
+        report.push(`未找到 ${unresolved.length} 个，已留在输入框中，请修改后重试。`);
+      }
+      // Keep only the lines that still need attention.
+      this.elImportAddressInput.value = unresolved.join("\n");
+      this.setImportStatus(report.join("\n"), plan.add.length === 0 && unresolved.length > 0);
+    } catch (e) {
+      this.setImportStatus(e.message || String(e), true);
+    } finally {
+      this.importing = false;
+      this.elBtnConfirmImport.disabled = false;
+    }
   }
 
   /**

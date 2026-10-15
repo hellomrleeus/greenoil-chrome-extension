@@ -92,6 +92,10 @@
               <!-- Rendered dynamically: 5 color route buttons -->
             </div>
             <div class="route-toolbar-actions">
+              <button id="btnImportAddresses" class="btn-subtle" title="粘贴地址，批量加入当前路线">
+                <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                导入地址
+              </button>
               <button id="btnClearRoute" class="btn-subtle btn-danger-subtle" title="清空当前路线所有途径点">
                 <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                 清空
@@ -300,6 +304,27 @@
       </div>
     </div>
 
+    <!-- Import Addresses Modal -->
+    <div id="importModal" class="modal-overlay" style="display: none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 class="modal-title">导入地址</h3>
+          <button id="btnCloseImportModal" class="icon-btn" title="关闭">
+            <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-desc">每行一个地址（也可以是“店名, 地址”），最多 100 行。需要先打开一个 Google Maps 标签页，地址会用 Google Maps 查找后加入当前路线。</div>
+          <textarea id="importAddressInput" class="form-input import-textarea" rows="7" placeholder="4490 Chesswood Dr, North York, ON M3J 2B9&#10;Tim Hortons, 4400 Dufferin St, Toronto"></textarea>
+          <div id="importStatus" class="import-status" style="display: none;"></div>
+        </div>
+        <div class="modal-footer modal-btn-row">
+          <button id="btnCancelImportModal" class="btn btn-secondary">取消</button>
+          <button id="btnConfirmImport" class="btn btn-primary">导入到当前路线</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Auth & Sync Modal -->
     <div id="authModal" class="modal-overlay" style="display: none;">
       <div class="modal-card">
@@ -340,6 +365,7 @@
   </div>
 
   <script src="route-optimizer.js"></script>
+  <script src="address-import.js"></script>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

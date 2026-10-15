@@ -385,6 +385,36 @@
     return parseDetailResponse(await resp.text());
   }
 
+  // ---- address lookup (popup "导入地址") ----
+
+  /** Google's "0x…:0x<cid>" feature id -> the "cid_<hex>" ids waypoints use. */
+  function cidFromPlaceId(placeId) {
+    const m = String(placeId || "").match(/^0x[0-9a-f]+:0x([0-9a-f]+)$/i);
+    return m ? `cid_${m[1]}` : "";
+  }
+
+  /**
+   * Free-text address / place name -> the place Google Maps would open for it
+   * ({name, address, latitude, longitude, placeId}), or null when Google
+   * finds nothing. Searched around `view` so "123 Main St" means the one
+   * near the map the user is looking at.
+   */
+  async function lookupAddress(query, view, fetchImpl) {
+    const q = String(query || "").trim();
+    if (!q) return null;
+    const resp = await (fetchImpl || fetch)(buildSearchUrl(view, q, 5, 0), { credentials: "include" });
+    if (!resp.ok) throw new Error(`Google search HTTP ${resp.status}`);
+    const rec = parseSearchResponse(await resp.text())[0];
+    if (!rec) return null;
+    return {
+      name: rec.name,
+      address: rec.address || rec.addressLines.join(", ") || q,
+      latitude: rec.latitude,
+      longitude: rec.longitude,
+      placeId: cidFromPlaceId(rec.placeId),
+    };
+  }
+
   // ---- rate limiting ----
 
   /**
@@ -424,6 +454,8 @@
     toPlace,
     createWindowLister,
     fetchPlaceDetail,
+    cidFromPlaceId,
+    lookupAddress,
     createRateLimiter,
   };
 

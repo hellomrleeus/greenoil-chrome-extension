@@ -194,6 +194,15 @@ if (window.__greenoil_injected__) {
           sendResponse({ success: true });
         }
 
+        // Popup "导入地址": look the lines up with Google Maps' own search.
+        if (message.action === "lookupAddresses" && Array.isArray(message.queries)) {
+          lookupAddresses(message.queries).then(
+            (results) => sendResponse({ success: true, results }),
+            (err) => sendResponse({ success: false, error: String(err?.message || err) })
+          );
+          return true;
+        }
+
         if (message.action === "centerMapCoordinates") {
           const wp = {
             latitude: message.latitude,
@@ -1644,6 +1653,23 @@ if (window.__greenoil_injected__) {
       }
     }
     return view;
+  }
+
+  // Each query -> {query, place} (place null when Google found nothing) or
+  // {query, error}. Biased to the current map window, Toronto when unknown.
+  async function lookupAddresses(queries) {
+    if (!placesApi || !searchLimiter) throw new Error("地址查询组件未加载，请刷新 Google Maps 页面");
+    const view = currentMapView() || { lat: 43.7686, lng: -79.4674, zoom: 11, w: 1024, h: 768 };
+    const out = [];
+    for (const query of queries.slice(0, 100)) {
+      try {
+        const place = await searchLimiter(() => placesApi.lookupAddress(query, view));
+        out.push({ query, place });
+      } catch (err) {
+        out.push({ query, error: String(err?.message || err) });
+      }
+    }
+    return out;
   }
 
   /**
